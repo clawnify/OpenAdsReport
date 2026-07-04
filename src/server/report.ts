@@ -6,6 +6,7 @@
 // report always renders. Analyst, not manager: findings + advice only, no actions.
 
 import type { AccountReport, AdFatigueRow, AuditData, DailyPoint, Issue, Metrics, Platform, SearchTermRow } from "./providers/types";
+import type { LandingPageRow, LandingPagesResult } from "./providers/ga";
 import { deriveIssues } from "./metrics";
 import { flagFatigue, scaleCandidates, scoreAudit, summarizeWaste, type Rating, type ScoredAudit } from "./audit";
 
@@ -76,7 +77,7 @@ export const RECIPES: RecipeMeta[] = [
   { id: "account-audit", name: "Account Audit", blurb: "Scored health check — /100 across tracking, waste, coverage and creative, with dollar-ranked fixes.", available: true, platforms: ["meta", "google"] },
   { id: "search-terms", name: "Search Terms", blurb: "Wasted-spend and negative-keyword opportunities.", available: true, platforms: ["google"] },
   { id: "creative-fatigue", name: "Creative Fatigue", blurb: "Declining creatives — what to pause, refresh, and scale.", available: true, platforms: ["meta"] },
-  { id: "landing-page", name: "Landing Page Analysis", blurb: "Where conversions leak after the click.", available: false, platforms: ["meta", "google"] },
+  { id: "landing-page", name: "Landing Page Analysis", blurb: "Where paid traffic leaks after the click — conversion drops, bounce spikes, and the fix order by recoverable revenue.", available: true, platforms: ["meta", "google"] },
 ];
 
 /** Data the routes pre-fetch for a recipe; only the field the recipe needs is set. */
@@ -84,6 +85,7 @@ export interface RecipeData {
   audit?: AuditData | null;
   terms?: SearchTermRow[];
   ads?: AdFatigueRow[];
+  pages?: LandingPagesResult;
 }
 
 // ── Formatters (server-side → report carries display strings) ─────────────────
@@ -598,6 +600,155 @@ async function buildCreativeFatigue(report: AccountReport, apiKey: string | null
   return doc("creative-fatigue", "Creative Fatigue", report, health, sections, aiResult !== null);
 }
 
+// ── Landing Page Analysis (GA4 paid traffic) ─────────────────────────────────
+
+interface PageDiag {
+  row: LandingPageRow;
+  convDropPp: number | null; // percentage points vs prior window
+  bounceJumpPp: number | null;
+  recoverable: number; // prior rev/session on current sessions, minus current revenue
+  suggestion: string;
+}
+
+function diagnosePages(rows: LandingPageRow[]): PageDiag[] {
+  return rows.map((row) => {
+    const p = row.prev;
+    const convDropPp = p ? row.current.convRatePct - p.convRatePct : null;
+    const bounceJumpPp = p ? row.current.bounceRatePct - p.bounceRatePct : null;
+    const recoverable = p && p.revenuePerSession > row.current.revenuePerSession
+      ? (p.revenuePerSession - row.current.revenuePerSession) * row.current.sessions
+      : 0;
+    const suggestion =
+      bounceJumpPp !== null && bounceJumpPp > 10
+        ? "Bounce spiked — re-check message match: the ad's promise vs the hero copy on this page."
+        : convDropPp !== null && convDropPp < 0 && row.current.transactions < (p?.transactions ?? 0)
+          ? "Visitors stay but stopped buying — audit the form/checkout for new friction."
+          : "Conversion softened without a bounce spike — compare the ad creative sending traffic here against the page offer.";
+    return { row, convDropPp, bounceJumpPp, recoverable, suggestion };
+  });
+}
+
+async function buildLandingPages(report: AccountReport, apiKey: string | null, pages: LandingPagesResult): Promise<ReportDoc> {
+  const currency = report.account.currency;
+  const diags = diagnosePages(pages.rows);
+  const totalSessions = pages.rows.reduce((a, r) => a + r.current.sessions, 0);
+  const totalRevenue = pages.rows.reduce((a, r) => a + r.current.revenue, 0);
+  const totalKeyEvents = pages.rows.reduce((a, r) => a + r.current.keyEvents, 0);
+  const wBounce = totalSessions > 0 ? pages.rows.reduce((a, r) => a + r.current.bounceRatePct * r.current.sessions, 0) / totalSessions : 0;
+  const convRate = totalSessions > 0 ? (totalKeyEvents / totalSessions) * 100 : 0;
+  // Ignore sub-$50 declines — below that the "fix" is noise, not a priority.
+  const fixOrder = diags.filter((d) => d.recoverable >= 50).sort((a, b) => b.recoverable - a.recoverable);
+  const recoverable = fixOrder.reduce((a, d) => a + d.recoverable, 0);
+  const bounceSpikes = diags.filter((d) => d.bounceJumpPp !== null && d.bounceJumpPp > 10);
+
+  const user = [
+    snapshot(report),
+    ``,
+    `GA4 paid-traffic landing pages (property "${pages.propertyName}", ${pages.rows.length} pages, current vs prior ${report.range.days}-day window):`,
+    ...diags.slice(0, 20).map((d) =>
+      `- ${d.row.page} [${d.row.sourceMedium}]: ${Math.round(d.row.current.sessions)} sessions, bounce ${d.row.current.bounceRatePct.toFixed(0)}%${d.bounceJumpPp !== null ? ` (${d.bounceJumpPp >= 0 ? "+" : ""}${d.bounceJumpPp.toFixed(0)}pp)` : ""}, conv ${d.row.current.convRatePct.toFixed(1)}%${d.convDropPp !== null ? ` (${d.convDropPp >= 0 ? "+" : ""}${d.convDropPp.toFixed(1)}pp)` : ""}, rev/session ${d.row.current.revenuePerSession.toFixed(2)}${d.recoverable > 0 ? `, recoverable ~${Math.round(d.recoverable)}` : ""}`,
+    ),
+  ].join("\n");
+  const aiResult = apiKey ? await aiAnalysis(apiKey, "Landing Page Funnel Diagnostic", user) : null;
+
+  const analysis: Analysis = aiResult ?? {
+    summary: fixOrder.length
+      ? `${fixOrder.length} paid landing page${fixOrder.length === 1 ? "" : "s"} lost ground vs the prior period — roughly ${money(recoverable, currency)} of revenue is recoverable at current traffic. Start with ${fixOrder[0].row.page}.`
+      : `Paid landing pages are holding: no page shows a meaningful revenue-per-session decline vs the prior period.`,
+    findings: fixOrder.slice(0, 3).map((d, i) => ({
+      title: `${d.row.page} is leaking`,
+      detail: `Conv rate ${d.row.current.convRatePct.toFixed(1)}% (${d.convDropPp! >= 0 ? "+" : ""}${d.convDropPp!.toFixed(1)}pp), bounce ${d.row.current.bounceRatePct.toFixed(0)}%${d.bounceJumpPp !== null && d.bounceJumpPp > 10 ? ` (+${d.bounceJumpPp.toFixed(0)}pp — spike)` : ""} on ${Math.round(d.row.current.sessions)} sessions from ${d.row.sourceMedium}. ~${money(d.recoverable, currency)} recoverable.`,
+      severity: i === 0 ? ("high" as const) : ("medium" as const),
+      recommendation: d.suggestion,
+    })),
+    recommendations: fixOrder.slice(0, 4).map((d, i) => ({
+      text: `${d.row.page}: ${d.suggestion}`,
+      priority: i === 0 ? ("P0" as const) : ("P1" as const),
+    })),
+  };
+
+  const leakShare = totalRevenue > 0 ? recoverable / totalRevenue : 0;
+  const tone: Tone = leakShare > 0.15 ? "bad" : leakShare > 0.05 || bounceSpikes.length > 0 ? "warn" : "good";
+  const health: ReportDoc["health"] =
+    tone === "bad"
+      ? { label: "At risk", tone, line: `~${money(recoverable, currency)} recoverable across ${fixOrder.length} declining pages.` }
+      : tone === "warn"
+        ? { label: "Watch", tone, line: `${fixOrder.length || bounceSpikes.length} page${(fixOrder.length || bounceSpikes.length) === 1 ? "" : "s"} slipping — ~${money(recoverable, currency)} at stake.` }
+        : { label: "Healthy", tone, line: "Paid landing pages are converting in line with the prior period." };
+
+  const pageColumns = [
+    { label: "Landing Page", align: "left" as const },
+    { label: "Source / Medium", align: "left" as const },
+    { label: "Sessions", align: "right" as const },
+    { label: "Bounce", align: "right" as const },
+    { label: "Conv Rate", align: "right" as const },
+    { label: "Rev / Session", align: "right" as const },
+    { label: "Recoverable", align: "right" as const },
+  ];
+  const pp = (v: number | null) => (v === null ? "" : ` (${v >= 0 ? "+" : ""}${v.toFixed(1)}pp)`);
+  const maxSessions = Math.max(...pages.rows.map((r) => r.current.sessions), 1);
+  const pageRow = (d: PageDiag): Cell[] => [
+    { text: d.row.page, align: "left" },
+    { text: d.row.sourceMedium, align: "left" },
+    { text: num(d.row.current.sessions), align: "right", bar: d.row.current.sessions / maxSessions },
+    { text: `${d.row.current.bounceRatePct.toFixed(0)}%${pp(d.bounceJumpPp)}`, align: "right", tone: d.bounceJumpPp !== null && d.bounceJumpPp > 10 ? "bad" : undefined },
+    { text: `${d.row.current.convRatePct.toFixed(1)}%${pp(d.convDropPp)}`, align: "right", tone: d.convDropPp !== null ? (d.convDropPp < -0.5 ? "bad" : d.convDropPp > 0.5 ? "good" : undefined) : undefined },
+    { text: money(d.row.current.revenuePerSession, currency), align: "right" },
+    { text: d.recoverable > 0 ? money(d.recoverable, currency) : "—", align: "right", tone: d.recoverable > 0 ? "warn" : undefined },
+  ];
+
+  const sections: Section[] = [
+    {
+      eyebrow: "Executive Summary",
+      blocks: [
+        { kind: "callout", tone: health.tone, text: `${health.label} · ${health.line}` },
+        { kind: "prose", text: analysis.summary },
+        { kind: "prose", text: `Source: Google Analytics property "${pages.propertyName}", paid channel groups only. Load time isn't reported — GA4 doesn't expose page-speed metrics; check PageSpeed Insights separately for slow suspects.` },
+      ],
+    },
+    {
+      eyebrow: "Funnel Overview",
+      note: `${pages.rows.length} pages · paid traffic`,
+      blocks: [{
+        kind: "kpis",
+        items: [
+          { label: "Paid Sessions", value: num(totalSessions) },
+          { label: "Conv Rate", value: pct(convRate) },
+          { label: "Bounce Rate", value: pct(wBounce) },
+          { label: "Revenue", value: money(totalRevenue, currency) },
+          { label: "Bounce Spikes", value: num(bounceSpikes.length) },
+          { label: "Recoverable", value: money(recoverable, currency) },
+        ],
+      }],
+    },
+  ];
+  if (fixOrder.length) {
+    sections.push({
+      eyebrow: "Fix Order — Ranked by Recoverable Revenue",
+      note: `${fixOrder.length} pages`,
+      blocks: [{ kind: "table", columns: pageColumns, rows: fixOrder.slice(0, 10).map(pageRow) }],
+    });
+  }
+  sections.push({
+    eyebrow: "All Paid Landing Pages",
+    note: `top ${Math.min(15, diags.length)} by sessions`,
+    blocks: [{ kind: "table", columns: pageColumns, rows: diags.slice(0, 15).map(pageRow) }],
+  });
+
+  const fixes: Block | undefined = fixOrder.length
+    ? {
+        kind: "recommendations",
+        items: fixOrder.slice(0, 5).map((d, i) => ({
+          text: `${d.row.page}: ${d.suggestion}`,
+          priority: i === 0 || d.recoverable >= totalRevenue * 0.1 ? ("P0" as const) : ("P1" as const),
+          impact: `${money(d.recoverable, currency)} recoverable`,
+        })),
+      }
+    : undefined;
+  finish(analysis, sections, fixes);
+  return doc("landing-page", "Landing Page Analysis", report, health, sections, aiResult !== null);
+}
+
 // ── Entry point ──────────────────────────────────────────────────────────────
 
 /** Build a recipe's report document from a computed AccountReport + pre-fetched recipe data. */
@@ -612,6 +763,8 @@ export async function generateReport(
       return buildSearchTerms(report, apiKey, data.terms ?? []);
     case "creative-fatigue":
       return buildCreativeFatigue(report, apiKey, data.ads ?? []);
+    case "landing-page":
+      return buildLandingPages(report, apiKey, data.pages ?? { property: "", propertyName: "—", rows: [] });
     default:
       return buildAccountAudit(report, apiKey, data.audit ?? null);
   }

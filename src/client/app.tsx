@@ -62,7 +62,7 @@ type ReportDoc = {
   health: { label: "Healthy" | "Watch" | "At risk"; tone: Tone; line: string };
   sections: ReportSection[]; daily: DailyPoint[]; ai: boolean; preview: boolean; generatedAt: string;
 };
-type RecipeMeta = { id: string; name: string; blurb: string; available: boolean; platforms: Platform[] };
+type RecipeMeta = { id: string; name: string; blurb: string; available: boolean; platforms: Platform[]; locked?: string };
 
 // ── Theme (Clawnify Apps palette: white canvas, slate ink, coral accent) ──────
 
@@ -612,7 +612,7 @@ function ReportGallery({
               <span className="inline-flex items-center gap-1">
                 {r.platforms.map((p) => <PlatformLogo key={p} platform={p} size={12} />)}
               </span>
-              {!r.available && <span className="text-[10px] text-[#475569] bg-white border border-[#E2E8F0] rounded-full px-1.5 py-0.5 uppercase tracking-[0.1em]">soon</span>}
+              {!r.available && <span className="text-[10px] text-[#475569] bg-white border border-[#E2E8F0] rounded-full px-1.5 py-0.5 uppercase tracking-[0.1em]">{r.locked ?? "soon"}</span>}
               {mismatch && (
                 <span className="text-[10px] text-[#475569] bg-white border border-[#E2E8F0] rounded-full px-1.5 py-0.5 uppercase tracking-[0.1em]">
                   {r.platforms[0] === "meta" ? "Meta only" : "Google only"}

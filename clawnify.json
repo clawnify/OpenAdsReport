@@ -8,7 +8,7 @@
     "framework": "preact+hono",
     "database": false,
     "storage": false,
-    "credentials": ["metaads", "googleads"]
+    "credentials": ["metaads", "googleads", "google_analytics"]
   },
   "env": {
     "optional": ["OPENROUTER_API_KEY", "GOOGLEADS_DEVELOPER_TOKEN", "GOOGLEADS_LOGIN_CUSTOMER_ID"]

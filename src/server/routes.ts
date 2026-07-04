@@ -11,6 +11,7 @@ import { aiHints } from "./ai";
 import { REQUIRES } from "./requires";
 import type { Bindings } from "./env";
 import { sampleAccountRefs, sampleAccountReport, samplePortfolio, samplePreviewReport, sampleRecipeData } from "./sample";
+import { gaConnected, gaLandingPages } from "./providers/ga";
 import { RECIPES, generateReport } from "./report";
 
 const api = new Hono<{ Bindings: Bindings }>();
@@ -137,7 +138,19 @@ api.get("/api/account", async (c) => {
 });
 
 /** The analyst report gallery — which recipes exist and which are generatable. */
-api.get("/api/reports", (c) => c.json({ recipes: RECIPES }));
+api.get("/api/reports", async (c) => {
+  const providers = await connectedProviders(c.env);
+  const preview = providers.length === 0;
+  // Landing Page rides on the Google Analytics integration, not an ad platform;
+  // preview mode always renders it from sample data.
+  const ga = preview || (await gaConnected(c.env).catch(() => false));
+  const recipes = RECIPES.map((r) =>
+    r.id === "landing-page" && !ga
+      ? { ...r, available: false, locked: "Connect Google Analytics" }
+      : r,
+  );
+  return c.json({ recipes });
+});
 
 /**
  * Generate an analyst report (Phase 2). Same data path as /api/account, then the
@@ -171,6 +184,10 @@ api.get("/api/report", async (c) => {
       return c.json({ error: `${recipe.name} runs on ${wanted} accounts — pick one in the account selector.` }, 400);
     }
 
+    if (recipe.id === "landing-page" && !(await gaConnected(c.env).catch(() => false))) {
+      return c.json({ error: "Landing Page Analysis needs Google Analytics — connect it in the Clawnify dashboard." }, 400);
+    }
+
     const report = await provider.accountReport(accountId, range);
     // Fetch only what this recipe scores — the audit runs the full pass, the
     // focused recipes fetch their single dataset.
@@ -179,7 +196,9 @@ api.get("/api/report", async (c) => {
         ? { terms: await provider.searchTerms!(accountId, range) }
         : recipe.id === "creative-fatigue"
           ? { ads: await provider.adFatigue!(accountId, range) }
-          : { audit: await provider.auditData(accountId, range).catch(() => null) };
+          : recipe.id === "landing-page"
+            ? { pages: await gaLandingPages(c.env, range) }
+            : { audit: await provider.auditData(accountId, range).catch(() => null) };
     return c.json(await generateReport(recipe.id, report, apiKey, data));
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
