@@ -253,10 +253,36 @@ const sampleMetaAudit = (): MetaAudit => ({
   hasValueTracking: true,
 });
 
+const SAMPLE_PAGES: Array<[string, string, number, number, number, number, number, number, number, number, number, number]> = [
+  // page, source/medium, curSessions, curBouncePct, curConv, curRevenue, curTx, prevSessions, prevBouncePct, prevConv, prevRevenue, prevTx
+  ["/products/trail-x2", "google / cpc", 4180, 38, 176, 21400, 168, 3950, 36, 182, 22100, 174],
+  ["/landing/spring-sale", "facebook / paid", 3620, 61, 74, 8100, 71, 3410, 44, 132, 15300, 128],
+  ["/products/road-one", "google / cpc", 2890, 41, 98, 11900, 95, 2760, 42, 91, 11000, 88],
+  ["/collections/womens", "instagram / paid", 2140, 48, 51, 5400, 49, 2300, 47, 58, 6300, 55],
+  ["/landing/free-trial", "google / cpc", 1760, 71, 12, 900, 9, 1690, 52, 38, 3200, 31],
+  ["/blog/best-running-shoes", "google / cpc", 980, 66, 4, 380, 4, 1020, 64, 5, 420, 5],
+];
+
+const sampleLandingPages = (): import("./providers/ga").LandingPagesResult => ({
+  property: "properties/000000000",
+  propertyName: "Sample Store — GA4",
+  rows: SAMPLE_PAGES.map(([page, sourceMedium, s, b, k, rev, tx, ps, pb, pk, prev, ptx]) => {
+    const win = (sessions: number, bouncePct: number, keyEvents: number, revenue: number, transactions: number) => ({
+      sessions, keyEvents, revenue, transactions,
+      bounceRatePct: bouncePct,
+      convRatePct: sessions > 0 ? (keyEvents / sessions) * 100 : 0,
+      revenuePerSession: sessions > 0 ? revenue / sessions : 0,
+      aov: transactions > 0 ? revenue / transactions : 0,
+    });
+    return { page, sourceMedium, current: win(s, b, k, rev, tx), prev: win(ps, pb, pk, prev, ptx) };
+  }),
+});
+
 /** Recipe data for preview mode, matched to the sample report's platform. */
 export function sampleRecipeData(recipe: string, report: AccountReport, _range: DateRange): RecipeData {
   if (recipe === "search-terms") return { terms: sampleGoogleAudit().searchTerms };
   if (recipe === "creative-fatigue") return { ads: sampleAdFatigue() };
+  if (recipe === "landing-page") return { pages: sampleLandingPages() };
   return { audit: report.account.platform === "google" ? sampleGoogleAudit() : sampleMetaAudit() };
 }
 

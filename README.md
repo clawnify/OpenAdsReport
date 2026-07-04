@@ -32,7 +32,12 @@ and to Claude Code.
     drift for the current vs prior window; flags ads with frequency above 2.5
     and CTR falling more than 15%, ranked by spend, plus the winners safe to
     scale.
-  - **Landing Page Analysis** — coming soon.
+  - **Landing Page Analysis** (Google Analytics) — paid-traffic landing pages,
+    current vs prior period: conversion-rate drops, bounce-rate spikes
+    (> 10pp flagged), revenue per session, and a fix order ranked by
+    recoverable revenue with one specific suggestion per page. Needs the
+    Google Analytics integration connected; GA4 exposes no page-speed
+    metrics, so load time is out of scope.
 
 When no ad platform is connected the dashboard renders **sample/preview data** so
 it looks alive inside the Clawnify iframe.
