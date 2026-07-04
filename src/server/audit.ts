@@ -50,8 +50,8 @@ export function ratingOf(score: number): Rating {
   return "Critical";
 }
 
-const money = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(n);
+const money = (n: number, cur: string) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency: cur, maximumFractionDigits: 0 }).format(n);
 
 // ── Fatigue flags (shared with the Creative Fatigue recipe) ──────────────────
 
@@ -127,6 +127,7 @@ export function summarizeWaste(terms: SearchTermRow[]): WasteSummary {
 // ── Google categories ────────────────────────────────────────────────────────
 
 function googleCategories(report: AccountReport, audit: GoogleAudit): AuditCategory[] {
+  const cur = report.account.currency;
   const spend = report.kpis.cost.value;
   const clicks = report.kpis.clicks.value;
   const conversions = report.kpis.conversions.value;
@@ -166,7 +167,7 @@ function googleCategories(report: AccountReport, audit: GoogleAudit): AuditCateg
   const rated = s.excellent + s.good + s.average + s.poor;
   const creativeScore = rated === 0 ? null : clamp((s.excellent * 100 + s.good * 75 + s.average * 45 + s.poor * 15) / rated);
   const creativeFix = s.poor + s.average > 0
-    ? `Rewrite the ${s.poor + s.average} ads rated Average or Poor — add more unique headlines and pin fewer assets.`
+    ? `Rewrite the ${s.poor + s.average} ad${s.poor + s.average === 1 ? "" : "s"} rated Average or Poor — add more unique headlines and pin fewer assets.`
     : null;
 
   // Impression coverage — spend-weighted search IS + budget losses.
@@ -190,7 +191,7 @@ function googleCategories(report: AccountReport, audit: GoogleAudit): AuditCateg
   const lowQSSpend = scored.filter((k) => k.qualityScore! <= 4).reduce((a, k) => a + k.spend, 0);
   const qsScore = scored.length === 0 ? null : clamp(avgQS * 10);
   const qsFix = lowQSSpend > 0
-    ? `Rework ads + landing pages for the QS ≤ 4 keywords carrying ${money(lowQSSpend)} of spend (or pause them).`
+    ? `Rework ads + landing pages for the QS ≤ 4 keywords carrying ${money(lowQSSpend, cur)} of spend (or pause them).`
     : null;
 
   // Bidding strategy — budget-capped delivery and manual bidding with enough signal.
@@ -214,10 +215,10 @@ function googleCategories(report: AccountReport, audit: GoogleAudit): AuditCateg
 
   return [
     { id: "tracking", name: "Conversion tracking", weight: 25, score: trackingScore, rating: trackingScore === null ? null : ratingOf(trackingScore), detail: trackingDetail, atStake: trackingScore !== null && trackingScore < 50 ? spend : null, fix: trackingFix },
-    { id: "waste", name: "Wasted spend", weight: 20, score: wasteScore, rating: wasteScore === null ? null : ratingOf(wasteScore), detail: audit.searchTerms.length ? `${money(waste.wasted)} of the ${money(waste.analyzed)} on the top ${audit.searchTerms.length} search terms converted nothing.` : "No search-term data in range.", atStake: waste.wasted > 0 ? waste.wasted : null, fix: wasteFix },
+    { id: "waste", name: "Wasted spend", weight: 20, score: wasteScore, rating: wasteScore === null ? null : ratingOf(wasteScore), detail: audit.searchTerms.length ? `${money(waste.wasted, cur)} of the ${money(waste.analyzed, cur)} on the top ${audit.searchTerms.length} search terms converted nothing.` : "No search-term data in range.", atStake: waste.wasted > 0 ? waste.wasted : null, fix: wasteFix },
     { id: "coverage", name: "Impression coverage", weight: 15, score: coverageScore, rating: coverageScore === null ? null : ratingOf(coverageScore), detail: withIS.length ? `Search impression share ${(avgIS * 100).toFixed(0)}%, ${(avgLostBudget * 100).toFixed(0)}% lost to budget.` : "No impression-share data (non-search campaigns).", atStake: coverageAtStake, fix: coverageFix },
     { id: "creative", name: "Ad creative quality", weight: 15, score: creativeScore, rating: creativeScore === null ? null : ratingOf(creativeScore), detail: rated ? `${s.excellent} excellent / ${s.good} good / ${s.average} average / ${s.poor} poor ad strength.` : "No ad-strength data.", atStake: null, fix: creativeFix },
-    { id: "qs", name: "Quality Score", weight: 15, score: qsScore, rating: qsScore === null ? null : ratingOf(qsScore), detail: scored.length ? `Spend-weighted QS ${avgQS.toFixed(1)}; ${money(lowQSSpend)} riding on QS ≤ 4 keywords.` : "No scored keywords in range.", atStake: lowQSSpend > 0 ? lowQSSpend : null, fix: qsFix },
+    { id: "qs", name: "Quality Score", weight: 15, score: qsScore, rating: qsScore === null ? null : ratingOf(qsScore), detail: scored.length ? `Spend-weighted QS ${avgQS.toFixed(1)}; ${money(lowQSSpend, cur)} riding on QS ≤ 4 keywords.` : "No scored keywords in range.", atStake: lowQSSpend > 0 ? lowQSSpend : null, fix: qsFix },
     { id: "bidding", name: "Bidding strategy", weight: 10, score: biddingScore, rating: biddingScore === null ? null : ratingOf(biddingScore), detail: biddingDetail, atStake: null, fix: biddingFix },
   ];
 }
@@ -225,6 +226,7 @@ function googleCategories(report: AccountReport, audit: GoogleAudit): AuditCateg
 // ── Meta categories ──────────────────────────────────────────────────────────
 
 function metaCategories(report: AccountReport, audit: MetaAudit): AuditCategory[] {
+  const cur = report.account.currency;
   const spend = report.kpis.cost.value;
   const roas = report.kpis.roas.value;
 
@@ -262,7 +264,7 @@ function metaCategories(report: AccountReport, audit: MetaAudit): AuditCategory[
   const fatigueRatio = flagSpend > 0 ? fatiguedSpend / flagSpend : 0;
   const fatigueScore = audit.ads.length === 0 ? null : clamp(100 - fatigueRatio * 180);
   const fatigueFix = fatigued.length
-    ? `Pause or refresh the ${fatigued.length} fatigued ad${fatigued.length === 1 ? "" : "s"} carrying ${money(fatiguedSpend)} of recent spend.`
+    ? `Pause or refresh the ${fatigued.length} fatigued ad${fatigued.length === 1 ? "" : "s"} carrying ${money(fatiguedSpend, cur)} of recent spend.`
     : null;
 
   // Delivery trend — clicks + impressions direction.
@@ -280,7 +282,7 @@ function metaCategories(report: AccountReport, audit: MetaAudit): AuditCategory[
 
   return [
     { id: "tracking", name: "Conversion tracking", weight: 30, score: trackingScore, rating: ratingOf(trackingScore), detail: trackingDetail, atStake: trackingScore < 50 ? spend : null, fix: trackingFix },
-    { id: "efficiency", name: "Spend efficiency", weight: 30, score: efficiencyScore, rating: ratingOf(efficiencyScore), detail: `${roas.toFixed(1)}x ROAS on ${money(spend)}${cpaDelta !== null && cpaDelta > 15 ? ", CPA drifting up" : ""}.`, atStake: roas < 1 ? spend * (1 - roas) : null, fix: efficiencyFix },
+    { id: "efficiency", name: "Spend efficiency", weight: 30, score: efficiencyScore, rating: ratingOf(efficiencyScore), detail: `${roas.toFixed(1)}x ROAS on ${money(spend, cur)}${cpaDelta !== null && cpaDelta > 15 ? ", CPA drifting up" : ""}.`, atStake: roas < 1 ? spend * (1 - roas) : null, fix: efficiencyFix },
     { id: "fatigue", name: "Creative fatigue", weight: 25, score: fatigueScore, rating: fatigueScore === null ? null : ratingOf(fatigueScore), detail: audit.ads.length ? `${fatigued.length} of ${flags.length} analyzed ads fatigued (${(fatigueRatio * 100).toFixed(0)}% of their spend).` : "No ad-level data in range.", atStake: fatiguedSpend > 0 ? fatiguedSpend : null, fix: fatigueFix },
     { id: "delivery", name: "Delivery trend", weight: 15, score: deliveryScore, rating: ratingOf(deliveryScore), detail: deliveryDetail, atStake: null, fix: null },
   ];
