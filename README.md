@@ -15,11 +15,24 @@ and to Claude Code.
 - **Account View** — one account in depth: KPI cards with period-over-period
   deltas, three combo charts (Cost/ROAS, Conversions/Conv-rate, Clicks/CTR), a
   channel breakdown, and that account's top issues.
-- **Reports** — agent-authored analyst reports. Pick a recipe (Account Audit
-  today; Search Terms, Creative Fatigue, Landing Page next), generate a
-  diagnostic audit — health verdict, KPIs, trends, findings, and prioritised
-  recommendations — and export it to PDF. AI-written when `OPENROUTER_API_KEY`
-  is set, deterministic heuristics otherwise.
+- **Reports** — analyst reports built from live data. Pick a recipe, generate,
+  export to PDF. Prose is AI-written when `OPENROUTER_API_KEY` is set,
+  deterministic heuristics otherwise — every number is always computed by the
+  app, never by the model.
+  - **Account Audit** (Meta + Google) — a scored health check: /100 overall,
+    per-category ratings (conversion tracking, wasted spend, impression
+    coverage, ad creative quality, Quality Score, bidding strategy on Google;
+    tracking, spend efficiency, creative fatigue, delivery on Meta), the worst
+    category flagged as the place to start, and priority fixes ranked by the
+    dollars at stake.
+  - **Search Terms** (Google) — the top search terms by cost vs conversions,
+    wasted spend quantified, and zero-conversion terms suggested as exact
+    negatives.
+  - **Creative Fatigue** (Meta) — every analyzed ad's frequency, CTR/CPM/CPA
+    drift for the current vs prior window; flags ads with frequency above 2.5
+    and CTR falling more than 15%, ranked by spend, plus the winners safe to
+    scale.
+  - **Landing Page Analysis** — coming soon.
 
 When no ad platform is connected the dashboard renders **sample/preview data** so
 it looks alive inside the Clawnify iframe.
@@ -35,6 +48,8 @@ Period-over-period deltas use the equal-length window immediately before `since`
 | `GET /api/accounts` | Account list across connected platforms (for the picker) |
 | `GET /api/portfolio?since=&until=` | `PortfolioReport`: totals, per-account rows, top issues |
 | `GET /api/account?platform=&account_id=&since=&until=` | `AccountReport`: KPIs+deltas, daily series, channel, issues |
+| `GET /api/reports` | The report recipe gallery (id, name, platforms, availability) |
+| `GET /api/report?recipe=&platform=&account_id=&since=&until=` | `ReportDoc`: a full analyst report as typed sections/blocks |
 
 Shapes live in [`src/server/providers/types.ts`](src/server/providers/types.ts).
 All metric math (ROAS, CPA, CTR, conversion rate, deltas, issue derivation) is in
@@ -79,9 +94,12 @@ pnpm build      # vite build → dist/
 npx clawnify deploy
 ```
 
-## Roadmap (Phase 2)
+## How reports work
 
-A report renderer: agents emit a structured `<report>` document with `<analytics>`
-(KPI cards + chart data) and `<actions>` (issue cards + decision tables); the app
-parses the tags into the same component kit and exports leadership-ready PDFs, with
-a gallery of report recipes (Account Audit, Search Terms, Creative Fatigue, …).
+The report engine ([`src/server/report.ts`](src/server/report.ts)) assembles a
+typed document — sections of blocks (scorecard, KPIs, charts, tables, findings,
+recommendations) — from numbers the app computed. The scoring math lives in
+[`src/server/audit.ts`](src/server/audit.ts); the AI layer only writes the
+summary and findings prose around those numbers, so dollar amounts and scores
+are always deterministic and reproducible. The same `GET /api/report` JSON that
+the Reports view renders is what agents consume.

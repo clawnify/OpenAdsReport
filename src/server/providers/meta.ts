@@ -4,9 +4,12 @@
 // app carries NO Graph API URLs, version, or token plumbing: the broker is hidden
 // and a future maintainer swap changes the descriptor, not this file.
 
-import type { AccountRef, AccountReport, AccountSummary, AdProvider, DailyPoint, DateRange, Metrics } from "./types";
+import type {
+  AccountRef, AccountReport, AccountSummary, AdFatigueRow, AdProvider, AdWindowMetrics,
+  DailyPoint, DateRange, MetaAudit, Metrics,
+} from "./types";
 import { connect, isConnected, type ConnectionsEnv, type MetaAdsClient, type MetaInsightRow } from "@clawnify/connections";
-import { buildKpis, deriveIssues, emptyMetrics, metrics } from "../metrics";
+import { buildKpis, cpa as cpaOf, ctr as ctrOf, deriveIssues, emptyMetrics, metrics } from "../metrics";
 
 type MetaAction = { action_type: string; value: string };
 
@@ -27,6 +30,31 @@ function rowMetrics(row: MetaInsightRow): Metrics {
 }
 
 const first = (rows: MetaInsightRow[]): Metrics => (rows[0] ? rowMetrics(rows[0]) : emptyMetrics());
+
+// Ad-level rows carry extra Graph fields the SDK type doesn't name.
+type AdRow = MetaInsightRow & Record<string, any>;
+
+const AD_FIELDS = [
+  "ad_id", "ad_name", "adset_name", "campaign_name",
+  "spend", "impressions", "clicks", "frequency", "cpm", "actions", "action_values",
+];
+
+function adWindow(row: AdRow): AdWindowMetrics {
+  const spend = +(row.spend ?? 0);
+  const clicks = +(row.clicks ?? 0);
+  const impressions = +(row.impressions ?? 0);
+  const conversions = pickAction(row.actions, "purchase");
+  return {
+    spend,
+    impressions,
+    clicks,
+    conversions,
+    frequency: row.frequency != null ? +row.frequency : null,
+    ctr: ctrOf(clicks, impressions),
+    cpm: row.cpm != null ? +row.cpm : impressions > 0 ? (spend / impressions) * 1000 : 0,
+    cpa: cpaOf(spend, conversions),
+  };
+}
 
 export class MetaProvider implements AdProvider {
   readonly id = "meta" as const;
@@ -95,6 +123,60 @@ export class MetaProvider implements AdProvider {
       issues: deriveIssues(curM, prevM, series),
       generatedAt: new Date().toISOString(),
       preview: false,
+    };
+  }
+
+  /**
+   * Per-ad metrics for the current vs prior half of the range (a 14-day range
+   * compares week over week). Rows join on ad_id; ads with no prior-window
+   * delivery keep prev: null.
+   * Ceiling: the insights action returns one Graph page (~25 ads per window) —
+   * enough for most accounts; large accounts see their top delivering ads.
+   */
+  async adFatigue(accountId: string, range: DateRange): Promise<AdFatigueRow[]> {
+    const id = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    // Split [since..until] into two equal halves.
+    const start = new Date(range.since + "T00:00:00Z");
+    const end = new Date(range.until + "T00:00:00Z");
+    const mid = new Date(start.getTime() + Math.floor((end.getTime() - start.getTime()) / 2));
+    const midNext = new Date(mid);
+    midNext.setUTCDate(midNext.getUTCDate() + 1);
+    const iso = (d: Date) => d.toISOString().split("T")[0];
+
+    const [curRows, prevRows] = await Promise.all([
+      this.client.insights(id, { level: "ad", fields: AD_FIELDS, since: iso(midNext), until: range.until }) as Promise<AdRow[]>,
+      this.client.insights(id, { level: "ad", fields: AD_FIELDS, since: range.since, until: iso(mid) }) as Promise<AdRow[]>,
+    ]);
+
+    const prevById = new Map(prevRows.filter((r) => r.ad_id).map((r) => [String(r.ad_id), r]));
+    return curRows
+      .filter((r) => r.ad_id)
+      .map((r) => {
+        const prev = prevById.get(String(r.ad_id));
+        return {
+          adId: String(r.ad_id),
+          adName: String(r.ad_name ?? r.ad_id),
+          adsetName: String(r.adset_name ?? ""),
+          campaignName: String(r.campaign_name ?? ""),
+          current: adWindow(r),
+          prev: prev ? adWindow(prev) : null,
+        };
+      })
+      .sort((a, b) => b.current.spend - a.current.spend);
+  }
+
+  async auditData(accountId: string, range: DateRange): Promise<MetaAudit> {
+    const id = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const [ads, totals] = await Promise.all([
+      this.adFatigue(accountId, range).catch(() => [] as AdFatigueRow[]),
+      this.client.insights(id, { level: "account", since: range.since, until: range.until }),
+    ]);
+    const row = totals[0];
+    return {
+      platform: "meta",
+      ads,
+      hasPurchaseTracking: pickAction(row?.actions, "purchase") > 0,
+      hasValueTracking: pickAction(row?.action_values, "purchase") > 0,
     };
   }
 }

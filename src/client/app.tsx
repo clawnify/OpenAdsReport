@@ -38,6 +38,7 @@ type PortfolioReport = {
 // Phase 2 report document (mirrors src/server/report.ts).
 type Tone = "good" | "warn" | "bad" | "info";
 type Severity = "high" | "medium" | "low";
+type Rating = "Good" | "Fair" | "Needs work" | "Poor" | "Critical";
 type Cell = { text: string; align?: "left" | "right"; tone?: Tone; bar?: number };
 type Block =
   | { kind: "prose"; text: string }
@@ -45,8 +46,14 @@ type Block =
   | { kind: "chart"; chart: "spend-roas" | "conv-rate" | "clicks-ctr"; barLabel: string; lineLabel: string }
   | { kind: "table"; columns: { label: string; align?: "left" | "right" }[]; rows: Cell[][] }
   | { kind: "findings"; items: { title: string; detail: string; severity: Severity; recommendation?: string }[] }
-  | { kind: "recommendations"; items: { text: string; priority: "P0" | "P1" | "P2" }[] }
-  | { kind: "callout"; tone: Tone; text: string };
+  | { kind: "recommendations"; items: { text: string; priority: "P0" | "P1" | "P2"; impact?: string }[] }
+  | { kind: "callout"; tone: Tone; text: string }
+  | {
+      kind: "scorecard";
+      score: number;
+      rating: Rating;
+      categories: { name: string; rating: Rating | null; tone: Tone; score: number | null; detail: string; atStake?: string; worst?: boolean }[];
+    };
 type ReportSection = { eyebrow: string; note?: string; blocks: Block[] };
 type ReportDoc = {
   recipe: string; title: string; subtitle: string;
@@ -55,7 +62,7 @@ type ReportDoc = {
   health: { label: "Healthy" | "Watch" | "At risk"; tone: Tone; line: string };
   sections: ReportSection[]; daily: DailyPoint[]; ai: boolean; preview: boolean; generatedAt: string;
 };
-type RecipeMeta = { id: string; name: string; blurb: string; available: boolean };
+type RecipeMeta = { id: string; name: string; blurb: string; available: boolean; platforms: Platform[] };
 
 // ── Theme (Clawnify Apps palette: white canvas, slate ink, coral accent) ──────
 
@@ -495,11 +502,42 @@ function ReportBlock({ block, daily }: { block: Block; daily: DailyPoint[] }) {
         <ul className="space-y-2.5">
           {block.items.map((r, i) => (
             <li key={i} className="flex items-start gap-2.5">
-              <span className="text-[11px] font-semibold text-[#475569] bg-[#F1F5F9] border border-[#E2E8F0] rounded-[4px] px-1.5 py-0.5 tnum">{r.priority}</span>
-              <span className="text-[13px] text-[#1A202C] leading-relaxed">{r.text}</span>
+              <span className={`text-[11px] font-semibold rounded-[4px] px-1.5 py-0.5 tnum ${r.priority === "P0" ? "bg-[#FEF2F2] text-[#B91C1C] border border-[#FECACA]" : "text-[#475569] bg-[#F1F5F9] border border-[#E2E8F0]"}`}>{r.priority === "P0" ? "HIGH" : r.priority === "P1" ? "MED" : "LOW"}</span>
+              <span className="text-[13px] text-[#1A202C] leading-relaxed flex-1">{r.text}</span>
+              {r.impact && <span className="text-[11px] font-medium text-[#B45309] bg-[#FFFBEB] rounded-[4px] px-1.5 py-0.5 whitespace-nowrap tnum">{r.impact}</span>}
             </li>
           ))}
         </ul>
+      );
+    case "scorecard":
+      return (
+        <div className="flex flex-col sm:flex-row gap-5 sm:gap-8">
+          <div className="shrink-0 flex sm:flex-col items-baseline sm:items-start gap-2">
+            <div className="flex items-baseline gap-1">
+              <span className="text-[44px] font-semibold tracking-[-0.02em] text-[#1A202C] leading-none tnum">{block.score}</span>
+              <span className={`text-[15px] ${C.faint} tnum`}>/100</span>
+            </div>
+            <span className={`text-[12px] font-semibold rounded-full px-2.5 py-1 ${toneTint[block.score >= 70 ? "good" : block.score >= 50 ? "warn" : "bad"]}`}>{block.rating}</span>
+          </div>
+          <div className="flex-1 min-w-0">
+            {block.categories.map((cat, i) => (
+              <div key={i} className="flex items-start gap-3 py-2.5 border-b border-[#E2E8F0] last:border-b-0">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[13px] font-semibold text-[#1A202C]">{cat.name}</span>
+                    <span className={`text-[11px] font-semibold rounded-full px-2 py-0.5 ${toneTint[cat.tone]}`}>{cat.rating ?? "no data"}</span>
+                    {cat.worst && <span className="text-[10px] font-semibold uppercase tracking-[0.1em] text-[#B91C1C]">← start here</span>}
+                  </div>
+                  <p className="text-[12px] text-[#475569] leading-relaxed mt-0.5">{cat.detail}</p>
+                </div>
+                <div className="text-right shrink-0">
+                  <span className="text-[15px] font-semibold text-[#1A202C] tnum">{cat.score ?? "—"}</span>
+                  {cat.atStake && <div className="text-[11px] text-[#B45309] tnum whitespace-nowrap">{cat.atStake}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       );
   }
 }
@@ -550,19 +588,36 @@ function ReportDocView({ doc }: { doc: ReportDoc }) {
   );
 }
 
-function ReportGallery({ recipes, selected, onPick }: { recipes: RecipeMeta[]; selected: string; onPick: (id: string) => void }) {
+function ReportGallery({
+  recipes, selected, onPick, selectedPlatform, preview,
+}: {
+  recipes: RecipeMeta[]; selected: string; onPick: (id: string) => void;
+  /** Platform of the account picked in the top bar (gates platform-specific recipes on live data). */
+  selectedPlatform: Platform | null; preview: boolean;
+}) {
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
       {recipes.map((r) => {
         const active = r.id === selected;
+        // Preview mode swaps in a matching sample account server-side, so cards stay enabled.
+        const mismatch = r.available && !preview && selectedPlatform !== null && !r.platforms.includes(selectedPlatform);
+        const enabled = r.available && !mismatch;
         return (
-          <button key={r.id} disabled={!r.available} onClick={() => r.available && onPick(r.id)}
+          <button key={r.id} disabled={!enabled} onClick={() => enabled && onPick(r.id)}
             className={`text-left p-5 rounded-[14px] transition-colors ${
               active ? "bg-[#EEF0F3] ring-1 ring-[#DD5164]" : "bg-[#F6F7F9] hover:bg-[#EEF0F3]"
-            } ${!r.available ? "opacity-60 cursor-not-allowed hover:bg-[#F6F7F9]" : ""}`}>
+            } ${!enabled ? "opacity-60 cursor-not-allowed hover:bg-[#F6F7F9]" : ""}`}>
             <div className="flex items-center gap-2 flex-wrap">
               <span className="text-[15px] font-bold text-[#1A202C] tracking-[-0.01em]">{r.name}</span>
+              <span className="inline-flex items-center gap-1">
+                {r.platforms.map((p) => <PlatformLogo key={p} platform={p} size={12} />)}
+              </span>
               {!r.available && <span className="text-[10px] text-[#475569] bg-white border border-[#E2E8F0] rounded-full px-1.5 py-0.5 uppercase tracking-[0.1em]">soon</span>}
+              {mismatch && (
+                <span className="text-[10px] text-[#475569] bg-white border border-[#E2E8F0] rounded-full px-1.5 py-0.5 uppercase tracking-[0.1em]">
+                  {r.platforms[0] === "meta" ? "Meta only" : "Google only"}
+                </span>
+              )}
             </div>
             <p className="text-[13px] text-[#475569] leading-snug mt-1.5">{r.blurb}</p>
           </button>
@@ -658,14 +713,26 @@ export function App() {
   }, [days]);
   const qs = `since=${range.since}&until=${range.until}`;
 
+  const [previewAccounts, setPreviewAccounts] = useState(false);
+
   useEffect(() => {
     fetch("/api/accounts").then((r) => r.json()).then((data) => {
       const list: AccountRef[] = data.accounts ?? [];
       setAccounts(list);
+      setPreviewAccounts(Boolean(data.preview));
       setAccountId((cur) => cur ?? (list[0]?.id ?? null));
     }).catch(() => {});
     fetch("/api/reports").then((r) => r.json()).then((d) => setRecipes(d.recipes ?? [])).catch(() => {});
   }, []);
+
+  // Switching to an account whose platform can't run the selected recipe falls
+  // back to the cross-platform audit (live data only; preview swaps server-side).
+  const selectedPlatform = accounts.find((a) => a.id === accountId)?.platform ?? null;
+  useEffect(() => {
+    if (previewAccounts || !selectedPlatform) return;
+    const r = recipes.find((x) => x.id === recipe);
+    if (r && !r.platforms.includes(selectedPlatform)) setRecipe("account-audit");
+  }, [selectedPlatform, previewAccounts, recipes, recipe]);
 
   useEffect(() => {
     if (view !== "portfolio") return;
@@ -752,7 +819,7 @@ export function App() {
         {view === "reports" && (
           <div className="space-y-5 sm:space-y-6">
             <div className="no-print">
-              <ReportGallery recipes={recipes} selected={recipe} onPick={setRecipe} />
+              <ReportGallery recipes={recipes} selected={recipe} onPick={setRecipe} selectedPlatform={selectedPlatform} preview={previewAccounts} />
             </div>
             {report ? (
               <>

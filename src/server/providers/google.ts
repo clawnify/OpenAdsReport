@@ -4,7 +4,10 @@
 // into types.ts. `client.singleCustomer` tells us whether the connection targets
 // one managed account or we can enumerate accessible accounts.
 
-import type { AccountRef, AccountReport, AccountSummary, AdProvider, DailyPoint, DateRange, Metrics } from "./types";
+import type {
+  AccountRef, AccountReport, AccountSummary, AdProvider, AdStrengthCounts, CampaignPerfRow,
+  ConversionActionRow, DailyPoint, DateRange, GoogleAudit, KeywordQSRow, Metrics, SearchTermRow,
+} from "./types";
 import { connect, isConnected, type ConnectionsEnv, type GoogleAdsClient, type GoogleAdsRow } from "@clawnify/connections";
 import { buildKpis, deriveIssues, emptyMetrics, metrics } from "../metrics";
 
@@ -43,6 +46,35 @@ const QUERIES = {
   daily: (since: string, until: string) =>
     `SELECT segments.date, metrics.cost_micros, metrics.conversions, metrics.conversions_value, metrics.clicks, metrics.impressions
      FROM customer WHERE segments.date BETWEEN '${since}' AND '${until}' ORDER BY segments.date`,
+  // Phase 2 recipe data. Each query is one broker call; auditData runs them in parallel.
+  searchTerms: (since: string, until: string) =>
+    `SELECT search_term_view.search_term, segments.search_term_match_type, campaign.name,
+            metrics.cost_micros, metrics.clicks, metrics.impressions, metrics.conversions, metrics.conversions_value
+     FROM search_term_view WHERE segments.date BETWEEN '${since}' AND '${until}'
+     ORDER BY metrics.cost_micros DESC LIMIT 50`,
+  keywords: (since: string, until: string) =>
+    `SELECT ad_group_criterion.keyword.text, ad_group_criterion.quality_info.quality_score, campaign.name,
+            metrics.cost_micros, metrics.clicks
+     FROM keyword_view WHERE segments.date BETWEEN '${since}' AND '${until}'
+     ORDER BY metrics.cost_micros DESC LIMIT 200`,
+  campaigns: (since: string, until: string) =>
+    `SELECT campaign.id, campaign.name, campaign.bidding_strategy_type,
+            metrics.cost_micros, metrics.conversions, metrics.search_impression_share,
+            metrics.search_budget_lost_impression_share, metrics.search_rank_lost_impression_share
+     FROM campaign WHERE segments.date BETWEEN '${since}' AND '${until}' AND campaign.status = 'ENABLED'`,
+  adStrength: `SELECT ad_group_ad.ad_strength FROM ad_group_ad WHERE ad_group_ad.status = 'ENABLED'`,
+  conversionActions: `SELECT conversion_action.name, conversion_action.status, conversion_action.primary_for_goal,
+            conversion_action.include_in_conversions_metric FROM conversion_action`,
+};
+
+// GAQL rows for resources beyond `customer` — the SDK type only names the common
+// ones, extra resources arrive as camelCase/snake_case props alongside them.
+type Row = GoogleAdsRow & Record<string, any>;
+
+/** Impression-share fraction (0..1) or null when the campaign type doesn't report it. */
+const share = (m: any, camel: string, snake: string): number | null => {
+  const v = pick(m ?? {}, camel, snake);
+  return v == null ? null : Number(v);
 };
 
 export class GoogleProvider implements AdProvider {
@@ -150,5 +182,86 @@ export class GoogleProvider implements AdProvider {
       generatedAt: new Date().toISOString(),
       preview: false,
     };
+  }
+
+  async searchTerms(accountId: string, range: DateRange): Promise<SearchTermRow[]> {
+    const rows: Row[] = await this.gaql(accountId, QUERIES.searchTerms(range.since, range.until));
+    return rows.map((row) => {
+      const m = (row.metrics ?? {}) as any;
+      const view = pick(row, "searchTermView", "search_term_view") ?? {};
+      return {
+        term: String(pick(view, "searchTerm", "search_term") ?? ""),
+        campaign: String(row.campaign?.name ?? ""),
+        matchType: String(pick(row.segments ?? {}, "searchTermMatchType", "search_term_match_type") ?? ""),
+        spend: N(pick(m, "costMicros", "cost_micros")) / 1_000_000,
+        clicks: N(m.clicks),
+        impressions: N(m.impressions),
+        conversions: N(m.conversions),
+        revenue: N(pick(m, "conversionsValue", "conversions_value")),
+      };
+    }).filter((t) => t.term);
+  }
+
+  async auditData(accountId: string, range: DateRange): Promise<GoogleAudit> {
+    // Attribute-only queries (ad strength, conversion actions) can be rejected on
+    // some account setups; degrade that category to "no data" instead of failing
+    // the whole audit.
+    const soft = <T>(p: Promise<T>, empty: T) => p.catch(() => empty);
+    const [searchTerms, keywordRows, campaignRows, strengthRows, actionRows] = await Promise.all([
+      soft(this.searchTerms(accountId, range), [] as SearchTermRow[]),
+      soft(this.gaql(accountId, QUERIES.keywords(range.since, range.until)), [] as Row[]),
+      soft(this.gaql(accountId, QUERIES.campaigns(range.since, range.until)), [] as Row[]),
+      soft(this.gaql(accountId, QUERIES.adStrength), [] as Row[]),
+      soft(this.gaql(accountId, QUERIES.conversionActions), [] as Row[]),
+    ]);
+
+    const keywords: KeywordQSRow[] = (keywordRows as Row[]).map((row) => {
+      const crit = pick(row, "adGroupCriterion", "ad_group_criterion") ?? {};
+      const qs = pick(pick(crit, "qualityInfo", "quality_info") ?? {}, "qualityScore", "quality_score");
+      const m = (row.metrics ?? {}) as any;
+      return {
+        keyword: String(crit.keyword?.text ?? ""),
+        campaign: String(row.campaign?.name ?? ""),
+        qualityScore: qs == null ? null : Number(qs),
+        spend: N(pick(m, "costMicros", "cost_micros")) / 1_000_000,
+        clicks: N(m.clicks),
+      };
+    }).filter((k) => k.keyword);
+
+    const campaigns: CampaignPerfRow[] = (campaignRows as Row[]).map((row) => {
+      const m = (row.metrics ?? {}) as any;
+      return {
+        id: String(row.campaign?.id ?? ""),
+        name: String(row.campaign?.name ?? ""),
+        biddingStrategy: String(pick(row.campaign ?? {}, "biddingStrategyType", "bidding_strategy_type") ?? ""),
+        spend: N(pick(m, "costMicros", "cost_micros")) / 1_000_000,
+        conversions: N(m.conversions),
+        searchImpressionShare: share(m, "searchImpressionShare", "search_impression_share"),
+        lostBudgetShare: share(m, "searchBudgetLostImpressionShare", "search_budget_lost_impression_share"),
+        lostRankShare: share(m, "searchRankLostImpressionShare", "search_rank_lost_impression_share"),
+      };
+    });
+
+    const adStrength: AdStrengthCounts = { excellent: 0, good: 0, average: 0, poor: 0, pending: 0 };
+    for (const row of strengthRows as Row[]) {
+      const s = String(pick(pick(row, "adGroupAd", "ad_group_ad") ?? {}, "adStrength", "ad_strength") ?? "").toUpperCase();
+      if (s === "EXCELLENT") adStrength.excellent++;
+      else if (s === "GOOD") adStrength.good++;
+      else if (s === "AVERAGE") adStrength.average++;
+      else if (s === "POOR") adStrength.poor++;
+      else if (s === "PENDING") adStrength.pending++;
+    }
+
+    const conversionActions: ConversionActionRow[] = (actionRows as Row[]).map((row) => {
+      const a = pick(row, "conversionAction", "conversion_action") ?? {};
+      return {
+        name: String(a.name ?? ""),
+        status: String(a.status ?? ""),
+        primary: Boolean(pick(a, "primaryForGoal", "primary_for_goal")),
+        countsInConversions: Boolean(pick(a, "includeInConversionsMetric", "include_in_conversions_metric")),
+      };
+    }).filter((a) => a.name);
+
+    return { platform: "google", searchTerms, keywords, campaigns, adStrength, conversionActions };
   }
 }

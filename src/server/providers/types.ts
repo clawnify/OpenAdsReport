@@ -103,6 +103,100 @@ export interface PortfolioReport {
   preview: boolean;
 }
 
+// ── Recipe data (Phase 2) ────────────────────────────────────────────────────
+// Raw, platform-specific signals the report engine scores. Providers only fetch
+// and normalize; every judgment (scores, ratings, dollar impact) lives in
+// audit.ts so both platforms are graded by identical math.
+
+/** One search term from Google's search_term_view, ranked by cost. */
+export interface SearchTermRow {
+  term: string;
+  campaign: string;
+  matchType: string;
+  spend: number;
+  clicks: number;
+  impressions: number;
+  conversions: number;
+  revenue: number;
+}
+
+/** One keyword with its Quality Score (null when Google hasn't scored it). */
+export interface KeywordQSRow {
+  keyword: string;
+  campaign: string;
+  qualityScore: number | null;
+  spend: number;
+  clicks: number;
+}
+
+/** Per-campaign performance + auction coverage + bidding setup. */
+export interface CampaignPerfRow {
+  id: string;
+  name: string;
+  biddingStrategy: string;
+  spend: number;
+  conversions: number;
+  /** Fractions 0..1 from the API; null when the campaign type doesn't report them. */
+  searchImpressionShare: number | null;
+  lostBudgetShare: number | null;
+  lostRankShare: number | null;
+}
+
+/** Distribution of ad strength across enabled ads. */
+export interface AdStrengthCounts {
+  excellent: number;
+  good: number;
+  average: number;
+  poor: number;
+  pending: number;
+}
+
+export interface ConversionActionRow {
+  name: string;
+  status: string;
+  primary: boolean;
+  countsInConversions: boolean;
+}
+
+export interface GoogleAudit {
+  platform: "google";
+  searchTerms: SearchTermRow[];
+  keywords: KeywordQSRow[];
+  campaigns: CampaignPerfRow[];
+  adStrength: AdStrengthCounts;
+  conversionActions: ConversionActionRow[];
+}
+
+/** One ad's window metrics for fatigue analysis (current vs prior half of the range). */
+export interface AdWindowMetrics {
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  frequency: number | null;
+  ctr: number; // percent
+  cpm: number;
+  cpa: number;
+}
+
+export interface AdFatigueRow {
+  adId: string;
+  adName: string;
+  adsetName: string;
+  campaignName: string;
+  current: AdWindowMetrics;
+  prev: AdWindowMetrics | null;
+}
+
+export interface MetaAudit {
+  platform: "meta";
+  ads: AdFatigueRow[];
+  hasPurchaseTracking: boolean;
+  hasValueTracking: boolean;
+}
+
+export type AuditData = GoogleAudit | MetaAudit;
+
 export interface AdProvider {
   id: Platform;
   /** Whether the integrations broker / env supplied usable credentials. */
@@ -113,4 +207,10 @@ export interface AdProvider {
   accountSummaries(range: DateRange): Promise<AccountSummary[]>;
   /** Full Account View report for one account. */
   accountReport(accountId: string, range: DateRange): Promise<AccountReport>;
+  /** Everything the scored Account Audit needs, fetched in one parallel pass. */
+  auditData(accountId: string, range: DateRange): Promise<AuditData>;
+  /** Google only — search terms ranked by cost for the waste audit. */
+  searchTerms?(accountId: string, range: DateRange): Promise<SearchTermRow[]>;
+  /** Meta only — per-ad windows for the creative fatigue report. */
+  adFatigue?(accountId: string, range: DateRange): Promise<AdFatigueRow[]>;
 }
