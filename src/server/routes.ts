@@ -10,7 +10,7 @@ import { describe, secret } from "@clawnify/connections";
 import { aiHints } from "./ai";
 import { REQUIRES } from "./requires";
 import type { Bindings } from "./env";
-import { sampleAccountRefs, sampleAccountReport, samplePortfolio } from "./sample";
+import { sampleAccountRefs, sampleAccountReport, samplePortfolio, samplePreviewReport, sampleRecipeData } from "./sample";
 import { RECIPES, generateReport } from "./report";
 
 const api = new Hono<{ Bindings: Bindings }>();
@@ -146,9 +146,9 @@ api.get("/api/reports", (c) => c.json({ recipes: RECIPES }));
  * full audit, and what the Reports view renders.
  */
 api.get("/api/report", async (c) => {
-  const recipe = c.req.query("recipe") || "account-audit";
-  if (!RECIPES.some((r) => r.id === recipe && r.available)) {
-    return c.json({ error: `Unknown or unavailable report: ${recipe}` }, 400);
+  const recipe = RECIPES.find((r) => r.id === (c.req.query("recipe") || "account-audit"));
+  if (!recipe || !recipe.available) {
+    return c.json({ error: `Unknown or unavailable report: ${c.req.query("recipe")}` }, 400);
   }
   const range = rangeFromQuery(c);
   const accountId = c.req.query("account_id");
@@ -157,16 +157,30 @@ api.get("/api/report", async (c) => {
   const providers = await connectedProviders(c.env);
 
   try {
-    const report =
-      providers.length === 0
-        ? sampleAccountReport(range, accountId || undefined)
-        : await (async () => {
-            if (!accountId) throw new Error("account_id required");
-            const provider = platform ? await getProvider(c.env, platform) : providers[0];
-            if (!provider) throw new Error(`Platform ${platform} not connected`);
-            return provider.accountReport(accountId, range);
-          })();
-    return c.json(await generateReport(recipe, report, apiKey));
+    if (providers.length === 0) {
+      // Preview mode: the sample account's platform must match the recipe.
+      const report = samplePreviewReport(range, accountId || undefined, recipe.platforms);
+      return c.json(await generateReport(recipe.id, report, apiKey, sampleRecipeData(recipe.id, report, range)));
+    }
+
+    if (!accountId) throw new Error("account_id required");
+    const provider = platform ? await getProvider(c.env, platform) : providers[0];
+    if (!provider) throw new Error(`Platform ${platform} not connected`);
+    if (!recipe.platforms.includes(provider.id)) {
+      const wanted = recipe.platforms.map((p) => (p === "meta" ? "Meta" : "Google Ads")).join(" / ");
+      return c.json({ error: `${recipe.name} runs on ${wanted} accounts — pick one in the account selector.` }, 400);
+    }
+
+    const report = await provider.accountReport(accountId, range);
+    // Fetch only what this recipe scores — the audit runs the full pass, the
+    // focused recipes fetch their single dataset.
+    const data =
+      recipe.id === "search-terms"
+        ? { terms: await provider.searchTerms!(accountId, range) }
+        : recipe.id === "creative-fatigue"
+          ? { ads: await provider.adFatigue!(accountId, range) }
+          : { audit: await provider.auditData(accountId, range).catch(() => null) };
+    return c.json(await generateReport(recipe.id, report, apiKey, data));
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }

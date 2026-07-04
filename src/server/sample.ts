@@ -3,7 +3,11 @@
 // mirror the design mocks; everything routes through the same metric helpers so
 // the shapes are identical to live data.
 
-import type { AccountRef, AccountReport, AccountSummary, DailyPoint, DateRange, Issue, Platform } from "./providers/types";
+import type {
+  AccountRef, AccountReport, AccountSummary, AdFatigueRow, DailyPoint, DateRange, GoogleAudit,
+  Issue, MetaAudit, Platform, SearchTermRow,
+} from "./providers/types";
+import type { RecipeData } from "./report";
 import { buildKpis, metrics, sumMetrics } from "./metrics";
 
 interface Seed {
@@ -150,6 +154,110 @@ export function samplePortfolio(range: DateRange): import("./providers/types").P
     generatedAt: new Date().toISOString(),
     preview: true,
   };
+}
+
+/**
+ * Preview report for the reports view: honor the requested account when its
+ * platform fits the recipe, otherwise fall back to a platform-matching sample so
+ * platform-specific recipes (Search Terms, Creative Fatigue) always render.
+ */
+export function samplePreviewReport(range: DateRange, accountId: string | undefined, platforms: Platform[]): AccountReport {
+  const requested = SEEDS.find((s) => s.id === accountId);
+  const seed =
+    requested && platforms.includes(requested.platform)
+      ? requested
+      : SEEDS.filter((s) => platforms.includes(s.platform)).sort((a, b) => b.spend - a.spend)[0];
+  return sampleAccountReport(range, seed?.id);
+}
+
+// ── Sample recipe data (Phase 2) ─────────────────────────────────────────────
+
+const SAMPLE_SEARCH_TERMS: Array<[string, string, string, number, number, number, number]> = [
+  // term, campaign, match, spend, clicks, conversions, revenue
+  ["running shoes", "Search - Core", "phrase", 1840.2, 920, 61, 7960],
+  ["best running shoes for flat feet", "Search - Core", "broad", 1211.4, 540, 34, 4470],
+  ["free running shoes", "Search - Core", "broad", 684.1, 410, 0, 0],
+  ["running shoes sale", "Search - Promo", "phrase", 610.9, 350, 22, 2350],
+  ["how to clean running shoes", "Search - Core", "broad", 402.7, 260, 0, 0],
+  ["trail running shoes", "Search - Core", "exact", 391.5, 190, 14, 1810],
+  ["running shoes repair near me", "Search - Core", "broad", 288.3, 170, 0, 0],
+  ["marathon training plan", "Search - Blog", "broad", 246.8, 200, 0, 0],
+  ["running shoes for kids", "Search - Core", "phrase", 201.2, 120, 6, 540],
+  ["nursing shoes", "Search - Core", "broad", 174.6, 110, 0, 0],
+  ["cheap sneakers bulk", "Search - Promo", "broad", 131.9, 90, 0, 0],
+  ["waterproof running shoes", "Search - Core", "exact", 122.4, 60, 5, 620],
+];
+
+const sampleGoogleAudit = (): GoogleAudit => ({
+  platform: "google",
+  searchTerms: SAMPLE_SEARCH_TERMS.map(([term, campaign, matchType, spend, clicks, conversions, revenue]) => ({
+    term, campaign, matchType, spend, clicks, conversions, revenue,
+    impressions: clicks * 40,
+  })),
+  keywords: [
+    { keyword: "running shoes", campaign: "Search - Core", qualityScore: 8, spend: 2100, clicks: 1040 },
+    { keyword: "trail running shoes", campaign: "Search - Core", qualityScore: 7, spend: 640, clicks: 300 },
+    { keyword: "buy sneakers online", campaign: "Search - Promo", qualityScore: 4, spend: 590, clicks: 310 },
+    { keyword: "shoes", campaign: "Search - Promo", qualityScore: 3, spend: 470, clicks: 260 },
+    { keyword: "waterproof running shoes", campaign: "Search - Core", qualityScore: 9, spend: 260, clicks: 120 },
+    { keyword: "running gear", campaign: "Search - Blog", qualityScore: 5, spend: 210, clicks: 140 },
+  ],
+  campaigns: [
+    { id: "1", name: "Search - Core", biddingStrategy: "TARGET_ROAS", spend: 6200, conversions: 210, searchImpressionShare: 0.62, lostBudgetShare: 0.21, lostRankShare: 0.17 },
+    { id: "2", name: "Search - Promo", biddingStrategy: "MANUAL_CPC", spend: 3100, conversions: 48, searchImpressionShare: 0.41, lostBudgetShare: 0.08, lostRankShare: 0.51 },
+    { id: "3", name: "Search - Blog", biddingStrategy: "MAXIMIZE_CLICKS", spend: 890, conversions: 2, searchImpressionShare: 0.55, lostBudgetShare: 0.02, lostRankShare: 0.43 },
+  ],
+  adStrength: { excellent: 4, good: 11, average: 9, poor: 3, pending: 1 },
+  conversionActions: [
+    { name: "Purchase", status: "ENABLED", primary: true, countsInConversions: true },
+    { name: "Add to cart", status: "ENABLED", primary: false, countsInConversions: false },
+    { name: "Newsletter signup", status: "REMOVED", primary: false, countsInConversions: false },
+  ],
+});
+
+const SAMPLE_ADS: Array<[string, string, string, number, number, number, number, number, number, number, number]> = [
+  // name, adset, campaign, curSpend, curFreq, curCtr, curConv, prevSpend, prevFreq, prevCtr, prevConv
+  ["UGC - Sarah unboxing", "Prospecting - Broad", "Evergreen", 2140, 1.6, 2.31, 42, 1980, 1.5, 2.24, 40],
+  ["Founder story v2", "Prospecting - Lookalike", "Evergreen", 1730, 2.9, 1.12, 14, 1590, 2.2, 1.58, 21],
+  ["Spring drop carousel", "Retargeting - 30d", "Promo", 1410, 3.4, 0.96, 18, 1360, 2.7, 1.31, 24],
+  ["Review mashup 15s", "Prospecting - Broad", "Evergreen", 980, 1.9, 1.87, 19, 870, 1.8, 1.79, 16],
+  ["Static - price anchor", "Retargeting - 7d", "Promo", 640, 2.2, 1.41, 11, 700, 2.1, 1.44, 12],
+  ["Podcast clip B", "Prospecting - Interests", "Evergreen", 410, 1.3, 1.66, 6, 280, 1.2, 1.52, 4],
+];
+
+const sampleAdFatigue = (): AdFatigueRow[] =>
+  SAMPLE_ADS.map(([adName, adsetName, campaignName, s, f, c, conv, ps, pf, pc, pconv], i) => {
+    const win = (spend: number, freq: number, ctrPct: number, conversions: number) => {
+      const clicks = Math.round(spend / 1.4);
+      const impressions = Math.round(clicks / (ctrPct / 100));
+      return {
+        spend, impressions, clicks, conversions,
+        frequency: freq,
+        ctr: ctrPct,
+        cpm: (spend / impressions) * 1000,
+        cpa: conversions > 0 ? spend / conversions : 0,
+      };
+    };
+    return {
+      adId: `ad_${i + 1}`,
+      adName, adsetName, campaignName,
+      current: win(s, f, c, conv),
+      prev: win(ps, pf, pc, pconv),
+    };
+  });
+
+const sampleMetaAudit = (): MetaAudit => ({
+  platform: "meta",
+  ads: sampleAdFatigue(),
+  hasPurchaseTracking: true,
+  hasValueTracking: true,
+});
+
+/** Recipe data for preview mode, matched to the sample report's platform. */
+export function sampleRecipeData(recipe: string, report: AccountReport, _range: DateRange): RecipeData {
+  if (recipe === "search-terms") return { terms: sampleGoogleAudit().searchTerms };
+  if (recipe === "creative-fatigue") return { ads: sampleAdFatigue() };
+  return { audit: report.account.platform === "google" ? sampleGoogleAudit() : sampleMetaAudit() };
 }
 
 export function sampleAccountReport(range: DateRange, accountId?: string): AccountReport {
