@@ -9,8 +9,10 @@
     "deploy": "clawnify deploy"
   },
   "dependencies": {
+    "@clawnify/app": "^0.1.0",
     "@clawnify/connections": "^0.2.2",
-    "hono": "^4.0.0",
+    "@hono/zod-openapi": "^0.18.0",
+    "hono": "^4.6.0",
     "lucide-react": "^0.400.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
