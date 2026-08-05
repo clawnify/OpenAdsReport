@@ -2,6 +2,8 @@
 
 # Open Ads Report
 
+[![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-ads-report)
+
 A live, cross-platform ads dashboard for **Meta Ads** and **Google Ads**. The app
 owns every calculation and exposes the results as a clean JSON API — the same
 surface that powers the UI is what Clawnify makes available to agents (via MCP/API)
