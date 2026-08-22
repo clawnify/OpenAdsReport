@@ -1,6 +1,6 @@
-<img src="readme-banner.png" alt="Open Ads Report preview" />
+<img src="readme-banner.png" alt="OpenAdsReport preview" />
 
-# Open Ads Report
+# OpenAdsReport
 
 [![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/open-ads-report)
 

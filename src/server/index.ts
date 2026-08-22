@@ -6,7 +6,7 @@ import api from "./routes";
 // `env` (the CREDENTIALS broker binding + injected secrets), so there's no
 // credential bootstrapping middleware to run here anymore.
 const app = createApp<{ Bindings: Bindings }>({
-  title: "Open Ads Report",
+  title: "OpenAdsReport",
   version: "1.0.0",
   description:
     "Live cross-platform ads dashboard. Pulls spend, ROAS, conversions and CPA from Meta and Google Ads into Account and Portfolio views, surfaces the top issues hurting performance, and exposes everything as a clean JSON API for Clawnify agents.",

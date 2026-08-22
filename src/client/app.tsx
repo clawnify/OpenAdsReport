@@ -843,7 +843,7 @@ export function App() {
 
         <footer className="mt-8 sm:mt-12 pt-4 sm:pt-6 border-t border-[#E2E8F0] no-print">
           <div className="flex items-center justify-end gap-6 text-[13px] text-[#475569]">
-            <span>Open Ads Report</span>
+            <span>OpenAdsReport</span>
             <span className="font-mono text-[11px]">API: /api/portfolio · /api/account · /api/report</span>
           </div>
         </footer>
