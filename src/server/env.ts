@@ -8,6 +8,10 @@ import type { CredentialBinding } from "@clawnify/connections";
 export type Bindings = {
   CREDENTIALS?: CredentialBinding;
   CLAWNIFY_ORG_ID?: string;
+  /** Org service token — authorizes the platform queue that schedules the sync. */
+  CLAWNIFY_TOKEN?: string;
+  // The D1 warehouse binding (env.DB) is read by @clawnify/db through the
+  // initDB middleware createApp({ db: true }) installs, so it isn't named here.
   OPENROUTER_API_KEY?: string;
   // Local-dev fallbacks:
   METAADS_BEARER_TOKEN?: string;

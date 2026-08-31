@@ -14,6 +14,12 @@ importers:
       '@clawnify/connections':
         specifier: ^0.2.2
         version: 0.2.2
+      '@clawnify/db':
+        specifier: ^0.4.1
+        version: 0.4.1
+      '@clawnify/queue':
+        specifier: ^0.1.1
+        version: 0.1.1
       '@hono/zod-openapi':
         specifier: ^0.18.0
         version: 0.18.4(hono@4.12.15)(zod@3.25.76)
@@ -165,6 +171,9 @@ packages:
 
   '@clawnify/integrations@0.2.2':
     resolution: {integrity: sha512-st7m8+zszpskeaj599kepIz8LSX0ASTkJThJ7gNGuOG7Ra9sn3ui+1P9kkKo8opYOXGOnLxYpAX2n8zRKkY26w==}
+
+  '@clawnify/queue@0.1.1':
+    resolution: {integrity: sha512-6gfaz4B3rVVFWMB0IjJ0mt3ausETXpiWodRqShMBTRwVtNyCXJ4FO4/f3qc/TYtnA9ZZBPVeBLjbzg5nTqvULw==}
 
   '@clawnify/routes@0.2.1':
     resolution: {integrity: sha512-syrH1Sk4uxXVI9Yo76yLrccAEpcwAUDxvxL3/K+QnLHFetPU/RaterpwXNbzonA2gtY7xBmYfJ66mgEw280HaQ==}
@@ -2161,6 +2170,8 @@ snapshots:
       - sqlite3
 
   '@clawnify/integrations@0.2.2': {}
+
+  '@clawnify/queue@0.1.1': {}
 
   '@clawnify/routes@0.2.1(@hono/zod-openapi@0.18.4(hono@4.12.15)(zod@3.25.76))(hono@4.12.15)':
     dependencies:

@@ -1,6 +1,11 @@
 // JSON API. This is the surface the dashboard renders from AND the surface
 // Clawnify exposes to agents (via MCP/API) and to Claude Code. Every number is
 // computed server-side here so all consumers see identical results.
+//
+// Reads come from the warehouse (warehouse.ts), not from the ad platforms. A
+// page view or an agent question costs D1 queries and zero platform calls; the
+// platforms are read on a schedule by sync.ts. Report recipes are the one
+// deliberate exception — see /api/report.
 
 import { Hono } from "hono";
 import type { AccountSummary, Issue, Platform, PortfolioReport } from "./providers/types";
@@ -13,6 +18,11 @@ import type { Bindings } from "./env";
 import { sampleAccountRefs, sampleAccountReport, samplePortfolio, samplePreviewReport, sampleRecipeData } from "./sample";
 import { gaConnected, gaLandingPages } from "./providers/ga";
 import { RECIPES, generateReport } from "./report";
+import {
+  hasWarehouseData, warehouseAccountReport, warehouseAccounts, warehouseFreshness, warehouseSummaries,
+} from "./warehouse";
+import { runSync, scheduleNextSync } from "./sync";
+import { verifyDelivery } from "@clawnify/queue";
 
 const api = new Hono<{ Bindings: Bindings }>();
 
@@ -36,6 +46,24 @@ async function hintsFor(
   return ai ?? fallback;
 }
 
+/**
+ * Where this request's numbers come from.
+ *
+ *   warehouse  — synced rows exist; serve from D1.
+ *   needs-sync — a platform is connected but no sync has landed yet. We say so
+ *                rather than showing sample numbers, which would be a lie, or
+ *                reading the platform live, which is what this design exists to
+ *                stop.
+ *   preview    — nothing connected; sample data, clearly labelled.
+ */
+type DataMode = "warehouse" | "needs-sync" | "preview";
+
+async function dataMode(env: Bindings, known?: { length: number }): Promise<DataMode> {
+  if (await hasWarehouseData()) return "warehouse";
+  const providers = known ?? (await connectedProviders(env));
+  return providers.length === 0 ? "preview" : "needs-sync";
+}
+
 const rangeFromQuery = (c: any) =>
   resolveRange({
     since: c.req.query("since") || undefined,
@@ -46,9 +74,15 @@ const rangeFromQuery = (c: any) =>
 /** Which platforms are connected, and whether we're in sample/preview mode. */
 api.get("/api/state", async (c) => {
   const providers = await connectedProviders(c.env);
+  const [freshness, mode] = await Promise.all([warehouseFreshness(), dataMode(c.env, providers)]);
   return c.json({
     providers: providers.map((p) => ({ id: p.id, connected: true })),
-    preview: providers.length === 0,
+    preview: mode === "preview",
+    needsSync: mode === "needs-sync",
+    // How current the numbers are. The dashboard reads synced rows, so this is
+    // the honest answer to "when was this last true?" — the live path could
+    // never state it.
+    freshness,
     platforms: ["meta", "google"] as Platform[],
     aiHints: !!secret("OPENROUTER_API_KEY", c.env),
     // Agent-legible readiness for everything this app declares in requires.ts:
@@ -59,24 +93,21 @@ api.get("/api/state", async (c) => {
 
 /** Account list for the picker, across all connected providers. */
 api.get("/api/accounts", async (c) => {
-  const providers = await connectedProviders(c.env);
-  if (providers.length === 0) return c.json({ preview: true, accounts: sampleAccountRefs() });
-  try {
-    const lists = await Promise.all(providers.map((p) => p.listAccounts().catch(() => [])));
-    return c.json({ preview: false, accounts: lists.flat() });
-  } catch (err: any) {
-    return c.json({ error: err.message }, 500);
-  }
+  const mode = await dataMode(c.env);
+  if (mode === "preview") return c.json({ preview: true, accounts: sampleAccountRefs() });
+  return c.json({ preview: false, needsSync: mode === "needs-sync", accounts: await warehouseAccounts() });
 });
 
 /** Portfolio View: every account across every platform, plus top issues. */
 api.get("/api/portfolio", async (c) => {
   const range = rangeFromQuery(c);
-  const providers = await connectedProviders(c.env);
-  if (providers.length === 0) return c.json(samplePortfolio(range));
+  const mode = await dataMode(c.env);
+  if (mode === "preview") return c.json(samplePortfolio(range));
 
   try {
-    const all = (await Promise.all(providers.map((p) => p.accountSummaries(range).catch(() => [])))).flat();
+    // Two grouped D1 queries for the whole portfolio, whatever the account
+    // count — this replaced 1 + 2N platform calls per request.
+    const all = await warehouseSummaries(range);
     const accounts = all.sort((a, b) => a.metrics.roas - b.metrics.roas);
     const totals = sumMetrics(accounts.map((a) => a.metrics));
     const topIssues = (
@@ -95,7 +126,7 @@ api.get("/api/portfolio", async (c) => {
       generatedAt: new Date().toISOString(),
       preview: false,
     };
-    return c.json(report);
+    return c.json({ ...report, needsSync: mode === "needs-sync" });
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
@@ -106,15 +137,21 @@ api.get("/api/account", async (c) => {
   const range = rangeFromQuery(c);
   const accountId = c.req.query("account_id");
   const platform = c.req.query("platform") as Platform | undefined;
-  const providers = await connectedProviders(c.env);
+  const mode = await dataMode(c.env);
 
-  if (providers.length === 0) return c.json(sampleAccountReport(range, accountId || undefined));
+  if (mode === "preview") return c.json(sampleAccountReport(range, accountId || undefined));
   if (!accountId) return c.json({ error: "account_id required" }, 400);
 
   try {
-    const provider = platform ? await getProvider(c.env, platform) : providers[0];
-    if (!provider) return c.json({ error: `Platform ${platform} not connected` }, 400);
-    const report = await provider.accountReport(accountId, range);
+    const report = await warehouseAccountReport(accountId, platform, range);
+    if (!report) {
+      return c.json(
+        { error: mode === "needs-sync"
+            ? "No synced data yet — run a sync to pull this account's history."
+            : `No synced data for account ${accountId}.` },
+        404,
+      );
+    }
 
     if (secret("OPENROUTER_API_KEY", c.env)) {
       const cur = report.channels[0]?.metrics;
@@ -188,9 +225,16 @@ api.get("/api/report", async (c) => {
       return c.json({ error: "Landing Page Analysis needs Google Analytics — connect it in the Clawnify dashboard." }, 400);
     }
 
-    const report = await provider.accountReport(accountId, range);
-    // Fetch only what this recipe scores — the audit runs the full pass, the
-    // focused recipes fetch their single dataset.
+    // The KPI/chart half of the report comes from the warehouse, so a report
+    // and the dashboard can never disagree about the same window (and four
+    // platform calls per report disappear). Falls back to a live read for an
+    // account the sync has not reached yet.
+    const report =
+      (await warehouseAccountReport(accountId, provider.id, range)) ??
+      (await provider.accountReport(accountId, range));
+    // The recipe's own dataset stays live: these are per-entity grains the
+    // daily warehouse does not hold, and a report is a deliberate, occasional
+    // action rather than something every page view triggers.
     const data =
       recipe.id === "search-terms"
         ? { terms: await provider.searchTerms!(accountId, range) }
@@ -203,6 +247,36 @@ api.get("/api/report", async (c) => {
   } catch (err: any) {
     return c.json({ error: err.message }, 500);
   }
+});
+
+/**
+ * Run a sync: pull the trailing window from every connected platform into the
+ * warehouse, then book tomorrow's run.
+ *
+ * This is the app's only scheduled platform read. It accepts a signed delivery
+ * from the platform queue, or a call from a signed-in user or agent (the "Sync
+ * now" button). Anonymous public callers cannot trigger platform reads.
+ */
+api.post("/api/sync", async (c) => {
+  const body = await c.req.text();
+  const signed = await verifyDelivery(body, {
+    signature: c.req.header("X-Queue-Signature") ?? null,
+    timestamp: c.req.header("X-Queue-Timestamp") ?? null,
+    keyId: c.req.header("X-Queue-Key-Id") ?? null,
+  }).catch(() => false);
+
+  // app-router strips every inbound X-Clawnify-* header before dispatch, so
+  // this is set by the platform or not at all — a public visitor cannot forge
+  // an identity to spend platform quota with.
+  const who = c.req.header("X-Clawnify-Caller") ?? "public";
+  if (!signed && (who === "public" || who === "bypass")) {
+    return c.json({ error: "Sign in to run a sync." }, 403);
+  }
+
+  const full = new URL(c.req.url).searchParams.get("full") === "1" || !(await hasWarehouseData());
+  const result = await runSync(c.env, { full });
+  const nextJobId = await scheduleNextSync(c.env, new URL(c.req.url).origin);
+  return c.json({ ...result, full, nextJobId }, result.status === "failed" ? 502 : 200);
 });
 
 export default api;

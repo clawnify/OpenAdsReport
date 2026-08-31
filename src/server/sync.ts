@@ -1,0 +1,230 @@
+// The only place this app reads an ad platform.
+//
+// Every dashboard number is served from `ad_daily` (see warehouse.ts); this
+// module is what puts rows there. It runs on a schedule rather than on the
+// request path, which is the whole architecture in one sentence: reads come
+// from the warehouse, writes go straight to the platform API.
+//
+// Why a trailing window instead of re-reading everything: Meta documents that
+// insights refresh roughly every 15 minutes and "do not change after 28 days of
+// being reported". Re-reading a settled window spends quota to rewrite numbers
+// that cannot have changed. That waste is the mechanism behind ads-API access
+// getting throttled or pulled, and avoiding it is the point of this file.
+//
+// The quota being spent is not ours alone, either: both integrations execute
+// through the credentials broker's maintainer, so the rate-limit pool is shared
+// and the platform's own utilization headers never reach us. We cannot watch
+// the gauge, so we keep the call count structurally low instead.
+
+import { run } from "@clawnify/db";
+import type { AdProvider, DailyPoint } from "./providers/types";
+import { connectedProviders } from "./providers";
+import type { Bindings } from "./env";
+
+/** Days after which platform data is settled and never re-read. */
+const SETTLE_DAYS = 28;
+
+/** How far back the first sync reaches, to give charts history on day one. */
+const BACKFILL_DAYS = 90;
+
+/**
+ * Days per platform call. A daily series comes back as one page of rows, and a
+ * page can be smaller than the window asked for, silently truncating a long
+ * range. Chunking well under any page size keeps the series complete; two calls
+ * per account per *day* is still far below the per-*request* fan-out this
+ * replaces.
+ */
+const CHUNK_DAYS = 14;
+
+/** Rows per INSERT. D1 caps bound parameters per statement; 8 columns x 10 rows stays clear of it. */
+const ROWS_PER_INSERT = 10;
+
+const iso = (d: Date) => d.toISOString().split("T")[0];
+
+function daysAgo(n: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - n);
+  return iso(d);
+}
+
+/** Inclusive [since, until] windows of at most CHUNK_DAYS days, oldest first. */
+function windows(since: string, until: string): { since: string; until: string }[] {
+  const out: { since: string; until: string }[] = [];
+  const end = new Date(until + "T00:00:00Z");
+  let cursor = new Date(since + "T00:00:00Z");
+  while (cursor <= end) {
+    const chunkEnd = new Date(cursor);
+    chunkEnd.setUTCDate(chunkEnd.getUTCDate() + CHUNK_DAYS - 1);
+    out.push({ since: iso(cursor), until: iso(chunkEnd > end ? end : chunkEnd) });
+    cursor = new Date(chunkEnd);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/**
+ * Retry with exponential backoff.
+ *
+ * Blind by necessity: the broker returns `{ data, error, successful }` and drops
+ * response headers, so a platform's `Retry-After` or utilization header never
+ * reaches us. Attempts are deliberately few — a sync that cannot get through is
+ * better recorded as failed and retried on the next scheduled run than turned
+ * into a retry storm against a shared quota pool.
+ */
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i === attempts - 1) break;
+      const delay = 1000 * 2 ** i + Math.floor(Math.random() * 250);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw new Error(`${label}: ${(lastErr as Error)?.message ?? String(lastErr)}`);
+}
+
+async function upsertDaily(platform: string, accountId: string, points: DailyPoint[]): Promise<number> {
+  let written = 0;
+  for (let i = 0; i < points.length; i += ROWS_PER_INSERT) {
+    const batch = points.slice(i, i + ROWS_PER_INSERT);
+    const values = batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))").join(", ");
+    const params = batch.flatMap((p) => [
+      platform, accountId, p.date, p.spend, p.revenue, p.conversions, p.clicks, p.impressions,
+    ]);
+    await run(
+      `INSERT INTO ad_daily
+         (platform, account_id, date, spend, revenue, conversions, clicks, impressions, synced_at)
+       VALUES ${values}
+       ON CONFLICT (platform, account_id, date) DO UPDATE SET
+         spend = excluded.spend,
+         revenue = excluded.revenue,
+         conversions = excluded.conversions,
+         clicks = excluded.clicks,
+         impressions = excluded.impressions,
+         synced_at = excluded.synced_at`,
+      params,
+    );
+    written += batch.length;
+  }
+  return written;
+}
+
+export interface SyncResult {
+  id: string;
+  status: "ok" | "partial" | "failed";
+  accounts: number;
+  rowsWritten: number;
+  apiCalls: number;
+  since: string;
+  until: string;
+  errors: string[];
+}
+
+/**
+ * Pull the trailing window for every account on every connected platform.
+ *
+ * Cost is O(accounts) platform calls per run, independent of how many people or
+ * agents look at the dashboard in between — which is the property the live read
+ * path did not have.
+ */
+export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Promise<SyncResult> {
+  const id = crypto.randomUUID();
+  const until = iso(new Date());
+  const since = daysAgo(opts.full ? BACKFILL_DAYS : SETTLE_DAYS);
+  const errors: string[] = [];
+  let accounts = 0;
+  let rowsWritten = 0;
+  let apiCalls = 0;
+
+  await run("INSERT INTO sync_runs (id, status) VALUES (?, 'running')", [id]);
+
+  try {
+    const providers = await connectedProviders(env);
+    if (providers.length === 0) throw new Error("No ad platform is connected.");
+
+    for (const provider of providers) {
+      let refs;
+      try {
+        refs = await withRetry(`${provider.id}.listAccounts`, () => provider.listAccounts());
+        apiCalls++;
+      } catch (err: any) {
+        errors.push(err.message);
+        continue;
+      }
+
+      for (const ref of refs) {
+        accounts++;
+        await run(
+          `INSERT INTO ad_accounts (id, platform, name, currency, first_seen, last_seen)
+           VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))
+           ON CONFLICT (platform, id) DO UPDATE SET
+             name = excluded.name, currency = excluded.currency, last_seen = excluded.last_seen`,
+          [ref.id, ref.platform, ref.name, ref.currency],
+        );
+
+        for (const w of windows(since, until)) {
+          try {
+            const points = await withRetry(
+              `${provider.id}.dailySeries(${ref.id} ${w.since}..${w.until})`,
+              () => (provider as AdProvider).dailySeries(ref.id, w.since, w.until),
+            );
+            apiCalls++;
+            rowsWritten += await upsertDaily(ref.platform, ref.id, points);
+          } catch (err: any) {
+            errors.push(err.message);
+          }
+        }
+      }
+    }
+
+    const status: SyncResult["status"] =
+      errors.length === 0 ? "ok" : rowsWritten > 0 ? "partial" : "failed";
+    await run(
+      `UPDATE sync_runs SET finished_at = datetime('now'), status = ?, accounts = ?,
+              rows_written = ?, api_calls = ?, error = ? WHERE id = ?`,
+      [status, accounts, rowsWritten, apiCalls, errors.length ? errors.slice(0, 5).join(" | ") : null, id],
+    );
+    return { id, status, accounts, rowsWritten, apiCalls, since, until, errors };
+  } catch (err: any) {
+    await run(
+      `UPDATE sync_runs SET finished_at = datetime('now'), status = 'failed', error = ? WHERE id = ?`,
+      [err.message, id],
+    );
+    return { id, status: "failed", accounts, rowsWritten, apiCalls, since, until, errors: [err.message] };
+  }
+}
+
+/**
+ * Book tomorrow's sync.
+ *
+ * The platform queue is the scheduler: each run schedules the next one, so the
+ * cadence survives redeploys without any cron config in the template. The
+ * idempotency key is the target date, so double-enqueueing (a manual sync on
+ * the same day, a retried delivery) collapses to one job rather than doubling
+ * the platform reads.
+ *
+ * `origin` is the app's own base URL, taken from the incoming request so the
+ * template carries no hardcoded slug.
+ */
+export async function scheduleNextSync(env: Bindings, origin: string): Promise<string | null> {
+  if (!env.CLAWNIFY_TOKEN) return null;
+  const next = new Date();
+  next.setUTCDate(next.getUTCDate() + 1);
+  next.setUTCHours(6, 0, 0, 0);
+  try {
+    const { enqueueJob } = await import("@clawnify/queue");
+    const job = await enqueueJob(env, {
+      targetUrl: `${origin}/api/sync`,
+      runAt: next,
+      idempotencyKey: `ads-sync-${iso(next)}`,
+      maxAttempts: 3,
+    });
+    return job.id;
+  } catch {
+    // A missing or unavailable queue must not fail the sync that just succeeded.
+    return null;
+  }
+}

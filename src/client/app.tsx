@@ -164,6 +164,63 @@ function KpiCard({
   );
 }
 
+/**
+ * How current the numbers are.
+ *
+ * The dashboard reads synced rows rather than calling the ad platforms on every
+ * page view, so it owes the reader an explicit answer to "when was this last
+ * true?" — a live-looking number with no timestamp is the dishonest version.
+ */
+type Freshness = {
+  lastSyncAt: string | null; status: string | null; accounts: number;
+  throughDate: string | null; error: string | null;
+};
+
+function sinceLabel(iso: string | null): string {
+  if (!iso) return "never";
+  const then = new Date(iso.includes("T") ? iso : iso.replace(" ", "T") + "Z").getTime();
+  const mins = Math.max(0, Math.round((Date.now() - then) / 60000));
+  if (mins < 2) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs} hour${hrs === 1 ? "" : "s"} ago`;
+  const days = Math.round(hrs / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+function SyncBar({ freshness, needsSync, syncing, onSync }: {
+  freshness: Freshness | null; needsSync: boolean; syncing: boolean; onSync: () => void;
+}) {
+  if (needsSync) {
+    return (
+      <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 rounded-[6px] ${C.card} text-[13px] ${C.text} mb-4 no-print`}>
+        <span><span className="font-semibold">Connected, not yet synced.</span> Pull your history once and the dashboard fills in.</span>
+        <button onClick={onSync} disabled={syncing}
+          className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-[6px] text-[13px] font-medium bg-[#DD5164] text-white hover:bg-[#C53A4E] transition-colors disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+          {syncing ? "Syncing…" : "Run first sync"}
+        </button>
+      </div>
+    );
+  }
+  if (!freshness?.lastSyncAt) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-[#64748B] mb-4 no-print">
+      <span className="tnum">
+        Synced {sinceLabel(freshness.lastSyncAt)}
+        {freshness.throughDate ? ` · data through ${freshness.throughDate}` : ""}
+      </span>
+      {freshness.status && freshness.status !== "ok" && (
+        <span className="text-[#B45309]" title={freshness.error ?? undefined}>· last sync {freshness.status}</span>
+      )}
+      <button onClick={onSync} disabled={syncing}
+        className="underline underline-offset-2 hover:text-[#1A202C] disabled:opacity-50">
+        {syncing ? "syncing…" : "sync now"}
+      </button>
+    </div>
+  );
+}
+
 function PreviewBanner() {
   return (
     <div className={`px-4 py-3 rounded-[6px] ${C.card} text-[13px] ${C.text}`}>
@@ -714,12 +771,40 @@ export function App() {
   const qs = `since=${range.since}&until=${range.until}`;
 
   const [previewAccounts, setPreviewAccounts] = useState(false);
+  const [freshness, setFreshness] = useState<Freshness | null>(null);
+  const [needsSync, setNeedsSync] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  function loadState() {
+    return fetch("/api/state").then((r) => r.json()).then((d) => {
+      setFreshness(d.freshness ?? null);
+      setNeedsSync(Boolean(d.needsSync));
+    }).catch(() => {});
+  }
+
+  useEffect(() => { loadState(); }, []);
+
+  // A sync is the only thing in this app that reads an ad platform, so it is an
+  // explicit action rather than something a page view triggers.
+  function runSyncNow() {
+    setSyncing(true); setError(null);
+    fetch("/api/sync", { method: "POST" })
+      .then((r) => r.json())
+      .then((d) => { if (d.error) setError(d.error); })
+      .catch((e) => setError(String(e)))
+      .finally(() => {
+        setSyncing(false);
+        loadState();
+        setNonce((n) => n + 1);
+      });
+  }
 
   useEffect(() => {
     fetch("/api/accounts").then((r) => r.json()).then((data) => {
       const list: AccountRef[] = data.accounts ?? [];
       setAccounts(list);
       setPreviewAccounts(Boolean(data.preview));
+      if (data.needsSync) setNeedsSync(true);
       setAccountId((cur) => cur ?? (list[0]?.id ?? null));
     }).catch(() => {});
     fetch("/api/reports").then((r) => r.json()).then((d) => setRecipes(d.recipes ?? [])).catch(() => {});
@@ -774,6 +859,10 @@ export function App() {
           days={days} setDays={setDays} range={range} refreshing={refreshing} onRefresh={() => setNonce((n) => n + 1)}
           onGenerate={generate} generating={generating}
         />
+
+        {!previewAccounts && (
+          <SyncBar freshness={freshness} needsSync={needsSync} syncing={syncing} onSync={runSyncNow} />
+        )}
 
         {error && (
           <div className="px-4 py-3 rounded-[6px] border border-[#FECACA] bg-[#FEF2F2] text-[13px] text-[#B91C1C] mb-4 no-print">{error}</div>

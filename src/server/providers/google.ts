@@ -143,11 +143,11 @@ export class GoogleProvider implements AdProvider {
   }
 
   async accountReport(accountId: string, range: DateRange): Promise<AccountReport> {
-    const [info, cur, prev, dailyRows] = await Promise.all([
+    const [info, cur, prev, daily] = await Promise.all([
       this.gaql(accountId, QUERIES.customer),
       this.totals(accountId, range.since, range.until),
       this.totals(accountId, range.prevSince, range.prevUntil),
-      this.gaql(accountId, QUERIES.daily(range.since, range.until)),
+      this.dailySeries(accountId, range.since, range.until),
     ]);
 
     const account: AccountRef = {
@@ -156,21 +156,6 @@ export class GoogleProvider implements AdProvider {
       platform: "google",
       currency: customerCurrency(info[0]),
     };
-
-    const daily: DailyPoint[] = dailyRows.map((row) => {
-      const m = rowMetrics(row);
-      return {
-        date: pick(row.segments ?? {}, "date") ?? "",
-        spend: m.spend,
-        revenue: m.revenue,
-        conversions: m.conversions,
-        clicks: m.clicks,
-        impressions: m.impressions,
-        roas: m.roas,
-        convRate: m.convRate,
-        ctr: m.ctr,
-      };
-    });
 
     return {
       account,
@@ -182,6 +167,20 @@ export class GoogleProvider implements AdProvider {
       generatedAt: new Date().toISOString(),
       preview: false,
     };
+  }
+
+  async dailySeries(accountId: string, since: string, until: string): Promise<DailyPoint[]> {
+    const rows = await this.gaql(accountId, QUERIES.daily(since, until));
+    return rows
+      .map((row) => {
+        const m = rowMetrics(row);
+        return {
+          date: String(pick(row.segments ?? {}, "date") ?? ""),
+          spend: m.spend, revenue: m.revenue, conversions: m.conversions, clicks: m.clicks,
+          impressions: m.impressions, roas: m.roas, convRate: m.convRate, ctr: m.ctr,
+        };
+      })
+      .filter((d) => d.date);
   }
 
   async searchTerms(accountId: string, range: DateRange): Promise<SearchTermRow[]> {

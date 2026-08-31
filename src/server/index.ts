@@ -9,8 +9,9 @@ const app = createApp<{ Bindings: Bindings }>({
   title: "OpenAdsReport",
   version: "1.0.0",
   description:
-    "Live cross-platform ads dashboard. Pulls spend, ROAS, conversions and CPA from Meta and Google Ads into Account and Portfolio views, surfaces the top issues hurting performance, and exposes everything as a clean JSON API for Clawnify agents.",
-  db: false,
+    
+    "Cross-platform ads dashboard. Syncs spend, ROAS, conversions and CPA from Meta and Google Ads on a schedule, serves Account and Portfolio views from the synced data, surfaces the top issues hurting performance, and exposes everything as a clean JSON API for Clawnify agents.",
+  db: true,
 });
 
 app.route("/", api);
