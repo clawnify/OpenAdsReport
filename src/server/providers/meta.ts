@@ -31,6 +31,16 @@ function rowMetrics(row: MetaInsightRow): Metrics {
 
 const first = (rows: MetaInsightRow[]): Metrics => (rows[0] ? rowMetrics(rows[0]) : emptyMetrics());
 
+/** One `time_increment=1` insights row as a chart/warehouse point. */
+function toDailyPoint(row: MetaInsightRow): DailyPoint {
+  const m = rowMetrics(row);
+  return {
+    date: row.date_start!,
+    spend: m.spend, revenue: m.revenue, conversions: m.conversions, clicks: m.clicks,
+    impressions: m.impressions, roas: m.roas, convRate: m.convRate, ctr: m.ctr,
+  };
+}
+
 // Ad-level rows carry extra Graph fields the SDK type doesn't name.
 type AdRow = MetaInsightRow & Record<string, any>;
 
@@ -95,35 +105,30 @@ export class MetaProvider implements AdProvider {
       this.client.object(id, ["name", "currency"]),
       this.client.insights(id, { level: "account", since: range.since, until: range.until }),
       this.client.insights(id, { level: "account", since: range.prevSince, until: range.prevUntil }),
-      // Per-day series for the charts (Graph time_increment=1).
-      this.client.insights(id, { level: "account", since: range.since, until: range.until, timeIncrement: 1 }),
+      // Per-day series for the charts — same call the sync makes.
+      this.dailySeries(id, range.since, range.until),
     ]);
 
     const curM = first(cur);
     const prevM = prev[0] ? rowMetrics(prev[0]) : null;
     const account: AccountRef = { id, name: obj.name ?? id, platform: "meta", currency: obj.currency ?? "USD" };
 
-    const series: DailyPoint[] = daily
-      .filter((row) => row.date_start)
-      .map((row) => {
-        const m = rowMetrics(row);
-        return {
-          date: row.date_start!,
-          spend: m.spend, revenue: m.revenue, conversions: m.conversions, clicks: m.clicks,
-          impressions: m.impressions, roas: m.roas, convRate: m.convRate, ctr: m.ctr,
-        };
-      });
-
     return {
       account,
       range: { since: range.since, until: range.until, days: range.days },
       kpis: buildKpis(curM, prevM),
-      daily: series,
+      daily,
       channels: [{ platform: "meta", metrics: curM }],
-      issues: deriveIssues(curM, prevM, series),
+      issues: deriveIssues(curM, prevM, daily),
       generatedAt: new Date().toISOString(),
       preview: false,
     };
+  }
+
+  async dailySeries(accountId: string, since: string, until: string): Promise<DailyPoint[]> {
+    const id = accountId.startsWith("act_") ? accountId : `act_${accountId}`;
+    const rows = await this.client.insights(id, { level: "account", since, until, timeIncrement: 1 });
+    return rows.filter((row) => row.date_start).map(toDailyPoint);
   }
 
   /**

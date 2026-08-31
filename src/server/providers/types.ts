@@ -207,6 +207,15 @@ export interface AdProvider {
   accountSummaries(range: DateRange): Promise<AccountSummary[]>;
   /** Full Account View report for one account. */
   accountReport(accountId: string, range: DateRange): Promise<AccountReport>;
+  /**
+   * Per-day rows for one account over an explicit window.
+   *
+   * This is the grain both platforms report natively, the grain `ad_daily`
+   * stores, and the only read the scheduled sync makes per account. Everything
+   * the dashboard shows is a SUM over these rows, so this one method replaces
+   * the per-request aggregate + prior-period calls the live path used to make.
+   */
+  dailySeries(accountId: string, since: string, until: string): Promise<DailyPoint[]>;
   /** Everything the scored Account Audit needs, fetched in one parallel pass. */
   auditData(accountId: string, range: DateRange): Promise<AuditData>;
   /** Google only — search terms ranked by cost for the waste audit. */

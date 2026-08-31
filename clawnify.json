@@ -3,10 +3,10 @@
   "version": 1,
   "name": "OpenAdsReport",
   "icon": "icon.svg",
-  "description": "Live cross-platform ads dashboard. Pulls spend, ROAS, conversions and CPA from Meta and Google Ads into Account and Portfolio views, surfaces the top issues hurting performance, and exposes everything as a clean JSON API for Clawnify agents.",
+  "description": "Cross-platform ads dashboard. Syncs spend, ROAS, conversions and CPA from Meta and Google Ads on a schedule, serves Account and Portfolio views from the synced data, surfaces the top issues hurting performance, and exposes everything as a clean JSON API for Clawnify agents.",
   "app": {
     "framework": "preact+hono",
-    "database": false,
+    "database": true,
     "storage": false,
     "credentials": ["metaads", "googleads", "google_analytics"]
   },

@@ -4,10 +4,15 @@
 
 [![Deploy with Clawnify](https://app.clawnify.com/deploy-button.svg)](https://app.clawnify.com/deploy?repo=clawnify/OpenAdsReport)
 
-A live, cross-platform ads dashboard for **Meta Ads** and **Google Ads**. The app
+A cross-platform ads dashboard for **Meta Ads** and **Google Ads**. The app
 owns every calculation and exposes the results as a clean JSON API — the same
 surface that powers the UI is what Clawnify makes available to agents (via MCP/API)
 and to Claude Code.
+
+Reads come from a local warehouse, not from the ad platforms. A scheduled sync
+pulls each account's daily numbers into the app's own database, and every view,
+API response and agent question is answered from those rows. See
+[How data gets in](#how-data-gets-in).
 
 ## Views
 
@@ -51,17 +56,44 @@ Period-over-period deltas use the equal-length window immediately before `since`
 
 | Endpoint | Returns |
 |----------|---------|
-| `GET /api/state` | Connected platforms + whether preview mode is active |
+| `GET /api/state` | Connected platforms, preview/needs-sync mode, and data freshness |
 | `GET /api/accounts` | Account list across connected platforms (for the picker) |
 | `GET /api/portfolio?since=&until=` | `PortfolioReport`: totals, per-account rows, top issues |
 | `GET /api/account?platform=&account_id=&since=&until=` | `AccountReport`: KPIs+deltas, daily series, channel, issues |
 | `GET /api/reports` | The report recipe gallery (id, name, platforms, availability) |
 | `GET /api/report?recipe=&platform=&account_id=&since=&until=` | `ReportDoc`: a full analyst report as typed sections/blocks |
+| `POST /api/sync` | Pull the trailing window from every connected platform into the warehouse |
 
 Shapes live in [`src/server/providers/types.ts`](src/server/providers/types.ts).
 All metric math (ROAS, CPA, CTR, conversion rate, deltas, issue derivation) is in
 [`src/server/metrics.ts`](src/server/metrics.ts) so Meta and Google numbers are
 computed identically.
+
+## How data gets in
+
+Every dashboard number is a `SUM` over `ad_daily`, one row per account per day
+(see [`schema.sql`](schema.sql)). Nothing on the request path calls an ad
+platform: a page view, a portfolio refresh or an agent question costs database
+queries and zero API calls.
+
+The platforms are read by one scheduled job ([`src/server/sync.ts`](src/server/sync.ts)):
+
+- It pulls only the **trailing 28 days**. Meta documents that insights refresh
+  roughly every 15 minutes and *do not change after 28 days of being reported*,
+  so re-reading anything older spends your API quota rewriting numbers that
+  cannot have changed. The first run backfills 90 days so the charts have
+  history on day one.
+- Each run books the next one, so the cadence survives redeploys. `POST /api/sync`
+  also runs it on demand, and the dashboard exposes that as **sync now**.
+- Costs **two API calls per account per day**. The date range is fetched in
+  chunks so a long window is never silently truncated by a short response page.
+
+Writes are the opposite: anything that changes an account goes straight to the
+platform API. Reads from the warehouse, writes to the API.
+
+Because the numbers are synced rather than live, the UI always states how fresh
+they are (`Synced 2 hours ago · data through 2026-08-30`), and `/api/state`
+returns the same thing as structured data.
 
 ## Credentials
 
