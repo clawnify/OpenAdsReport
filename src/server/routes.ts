@@ -5,7 +5,8 @@
 // Reads come from the warehouse (warehouse.ts), not from the ad platforms. A
 // page view or an agent question costs D1 queries and zero platform calls; the
 // platforms are read on a schedule by sync.ts. Report recipes are the one
-// deliberate exception — see /api/report.
+// deliberate exception, and they are bounded rather than free — see /api/report
+// and budget.ts.
 
 import { Hono } from "hono";
 import type { AccountSummary, Issue, Platform, PortfolioReport } from "./providers/types";
@@ -21,7 +22,8 @@ import { RECIPES, generateReport } from "./report";
 import {
   hasWarehouseData, warehouseAccountReport, warehouseAccounts, warehouseFreshness, warehouseSummaries,
 } from "./warehouse";
-import { runSync, scheduleNextSync } from "./sync";
+import { runSync, scheduleNextSync, syncInFlight } from "./sync";
+import { BudgetExceeded, budgetStatus, guardedRead } from "./budget";
 import { verifyDelivery } from "@clawnify/queue";
 
 const api = new Hono<{ Bindings: Bindings }>();
@@ -71,6 +73,18 @@ const rangeFromQuery = (c: any) =>
     days: c.req.query("days") ? parseInt(c.req.query("days"), 10) : undefined,
   });
 
+/**
+ * Whether a request may cause this app to call an ad platform.
+ *
+ * app-router strips every inbound X-Clawnify-* header before dispatch, so this
+ * header is set by the platform or not at all: an anonymous visitor cannot
+ * forge an identity in order to spend platform quota.
+ */
+const maySpendQuota = (c: any): boolean => {
+  const who = c.req.header("X-Clawnify-Caller") ?? "public";
+  return who !== "public" && who !== "bypass";
+};
+
 /** Which platforms are connected, and whether we're in sample/preview mode. */
 api.get("/api/state", async (c) => {
   const providers = await connectedProviders(c.env);
@@ -85,6 +99,9 @@ api.get("/api/state", async (c) => {
     freshness,
     platforms: ["meta", "google"] as Platform[],
     aiHints: !!secret("OPENROUTER_API_KEY", c.env),
+    // What the live-read allowance looks like right now, so the UI can explain
+    // a refused report before the user asks for one.
+    budget: await budgetStatus(),
     // Agent-legible readiness for everything this app declares in requires.ts:
     // what's connected, how to access it, and the dashboard step for any gaps.
     requirements: await describe(c.env, undefined, REQUIRES),
@@ -190,10 +207,35 @@ api.get("/api/reports", async (c) => {
 });
 
 /**
+ * How many platform operations a recipe's live dataset costs, per platform.
+ * Booked against the daily allowance, so the budget reflects real spend rather
+ * than a request count.
+ */
+const RECIPE_COST: Record<string, Record<string, number>> = {
+  // 5 GAQL queries: search terms, keyword quality, campaign performance, ad
+  // strength, conversion actions (providers/google.ts).
+  "account-audit": { google: 5, meta: 3 },
+  "search-terms": { google: 1 },
+  "creative-fatigue": { meta: 2 },
+  // resolveProperty + the current and prior windows (providers/ga.ts).
+  "landing-page": { google_analytics: 3 },
+};
+
+const costOf = (recipe: string, platform: string) => RECIPE_COST[recipe]?.[platform] ?? 1;
+
+/**
  * Generate an analyst report (Phase 2). Same data path as /api/account, then the
  * report engine assembles a typed document (KPIs/charts/tables from real numbers
  * + AI-authored analysis, heuristic fallback). The surface agents call to get a
  * full audit, and what the Reports view renders.
+ *
+ * This is the only route that can still read a platform on the request path,
+ * because recipes need per-entity grains the daily warehouse does not hold. It
+ * is therefore the route that has to be bounded: a caller check, so reaching
+ * the app is not the same as being allowed to spend quota, and a budget (see
+ * budget.ts) that caps the spend and reuses a recent pull instead of repeating
+ * it. Without both, a caller iterating a portfolio could drain a daily
+ * allowance in a single loop.
  */
 api.get("/api/report", async (c) => {
   const recipe = RECIPES.find((r) => r.id === (c.req.query("recipe") || "account-audit"));
@@ -213,6 +255,10 @@ api.get("/api/report", async (c) => {
       return c.json(await generateReport(recipe.id, report, apiKey, sampleRecipeData(recipe.id, report, range)));
     }
 
+    if (!maySpendQuota(c)) {
+      return c.json({ error: "Sign in to generate a report." }, 403);
+    }
+
     if (!accountId) throw new Error("account_id required");
     const provider = platform ? await getProvider(c.env, platform) : providers[0];
     if (!provider) throw new Error(`Platform ${platform} not connected`);
@@ -227,24 +273,44 @@ api.get("/api/report", async (c) => {
 
     // The KPI/chart half of the report comes from the warehouse, so a report
     // and the dashboard can never disagree about the same window (and four
-    // platform calls per report disappear). Falls back to a live read for an
-    // account the sync has not reached yet.
+    // platform calls per report disappear). Falls back to a live read, itself
+    // budgeted, for an account the sync has not reached yet.
     const report =
       (await warehouseAccountReport(accountId, provider.id, range)) ??
-      (await provider.accountReport(accountId, range));
-    // The recipe's own dataset stays live: these are per-entity grains the
-    // daily warehouse does not hold, and a report is a deliberate, occasional
-    // action rather than something every page view triggers.
-    const data =
-      recipe.id === "search-terms"
-        ? { terms: await provider.searchTerms!(accountId, range) }
-        : recipe.id === "creative-fatigue"
-          ? { ads: await provider.adFatigue!(accountId, range) }
-          : recipe.id === "landing-page"
-            ? { pages: await gaLandingPages(c.env, range) }
-            : { audit: await provider.auditData(accountId, range).catch(() => null) };
-    return c.json(await generateReport(recipe.id, report, apiKey, data));
+      (
+        await guardedRead({ platform: provider.id, accountId, kind: "account-report" }, 3, () =>
+          provider.accountReport(accountId, range),
+        )
+      ).data;
+
+    // The recipe's own dataset is still read live, but through the budget: it
+    // is capped per day, paused while the platform is rejecting us, and a
+    // second request for the same account within the cooldown reuses the first
+    // pull rather than paying for it again.
+    const source = recipe.id === "landing-page" ? "google_analytics" : provider.id;
+    const read = await guardedRead(
+      { platform: source, accountId, kind: recipe.id },
+      costOf(recipe.id, source),
+      async () =>
+        recipe.id === "search-terms"
+          ? { terms: await provider.searchTerms!(accountId, range) }
+          : recipe.id === "creative-fatigue"
+            ? { ads: await provider.adFatigue!(accountId, range) }
+            : recipe.id === "landing-page"
+              ? { pages: await gaLandingPages(c.env, range) }
+              : { audit: await provider.auditData(accountId, range).catch(() => null) },
+    );
+
+    const doc = await generateReport(recipe.id, report, apiKey, read.data);
+    // A reused pull is still a real answer, just not a fresh one — say so
+    // rather than implying the numbers were fetched a moment ago.
+    return c.json(read.fresh ? doc : { ...doc, reusedData: true, dataNote: read.note });
   } catch (err: any) {
+    if (err instanceof BudgetExceeded) {
+      return c.json({ error: err.message, retryAfter: err.retryAfterSeconds }, 429, {
+        "Retry-After": String(err.retryAfterSeconds),
+      });
+    }
     return c.json({ error: err.message }, 500);
   }
 });
@@ -255,7 +321,8 @@ api.get("/api/report", async (c) => {
  *
  * This is the app's only scheduled platform read. It accepts a signed delivery
  * from the platform queue, or a call from a signed-in user or agent (the "Sync
- * now" button). Anonymous public callers cannot trigger platform reads.
+ * now" button). Anonymous public callers cannot trigger platform reads, and a
+ * run already in flight is returned rather than duplicated.
  */
 api.post("/api/sync", async (c) => {
   const body = await c.req.text();
@@ -265,12 +332,21 @@ api.post("/api/sync", async (c) => {
     keyId: c.req.header("X-Queue-Key-Id") ?? null,
   }).catch(() => false);
 
-  // app-router strips every inbound X-Clawnify-* header before dispatch, so
-  // this is set by the platform or not at all — a public visitor cannot forge
-  // an identity to spend platform quota with.
-  const who = c.req.header("X-Clawnify-Caller") ?? "public";
-  if (!signed && (who === "public" || who === "bypass")) {
+  if (!signed && !maySpendQuota(c)) {
     return c.json({ error: "Sign in to run a sync." }, 403);
+  }
+
+  // One sync at a time. `sync_runs` already records a run's status; without
+  // reading it, repeated "Sync now" clicks each start their own full pull and
+  // put read volume straight back on the user's click rate — the exact thing
+  // syncing on a schedule exists to prevent.
+  const inFlight = await syncInFlight();
+  if (inFlight) {
+    return c.json(
+      { status: "in-progress", id: inFlight.id, startedAt: inFlight.startedAt,
+        message: "A sync started recently, so this returns that run rather than starting another." },
+      202,
+    );
   }
 
   const full = new URL(c.req.url).searchParams.get("full") === "1" || !(await hasWarehouseData());

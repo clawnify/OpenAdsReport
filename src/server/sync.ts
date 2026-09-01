@@ -16,10 +16,11 @@
 // and the platform's own utilization headers never reach us. We cannot watch
 // the gauge, so we keep the call count structurally low instead.
 
-import { run } from "@clawnify/db";
+import { get, run } from "@clawnify/db";
 import type { AdProvider, DailyPoint } from "./providers/types";
 import { connectedProviders } from "./providers";
 import type { Bindings } from "./env";
+import { platformAllowed, recordRead } from "./budget";
 
 /** Days after which platform data is settled and never re-read. */
 const SETTLE_DAYS = 28;
@@ -63,27 +64,64 @@ function windows(since: string, until: string): { since: string; until: string }
 }
 
 /**
- * Retry with exponential backoff.
+ * Run one platform read, book it against the budget, and never retry it.
  *
- * Blind by necessity: the broker returns `{ data, error, successful }` and drops
- * response headers, so a platform's `Retry-After` or utilization header never
- * reaches us. Attempts are deliberately few — a sync that cannot get through is
- * better recorded as failed and retried on the next scheduled run than turned
- * into a retry storm against a shared quota pool.
+ * Not retrying is the deliberate part. We cannot tell a rate-limit rejection
+ * from any other failure — a connection resolves to `{ data, error, successful }`
+ * with the response headers dropped — and both platforms treat a rejected
+ * request as spent quota, while Meta is explicit that continuing to call a
+ * limited endpoint lengthens the limit. So a failure is recorded and left
+ * alone.
+ *
+ * Nothing is lost by that. Every run re-reads the whole trailing window
+ * (SETTLE_DAYS), so a window missed today is picked up by tomorrow's run at no
+ * extra cost. The trailing window is the retry, and it waits hours rather than
+ * seconds.
  */
-async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
-  let lastErr: unknown;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      lastErr = err;
-      if (i === attempts - 1) break;
-      const delay = 1000 * 2 ** i + Math.floor(Math.random() * 250);
-      await new Promise((r) => setTimeout(r, delay));
-    }
+async function read<T>(
+  label: string,
+  key: { platform: string; accountId?: string },
+  fn: () => Promise<T>,
+): Promise<T> {
+  try {
+    const data = await fn();
+    await recordRead({ ...key, kind: "sync" }, { calls: 1, outcome: "ok" });
+    return data;
+  } catch (err: any) {
+    await recordRead({ ...key, kind: "sync" }, {
+      calls: 1,
+      outcome: "failed",
+      detail: err?.message ?? String(err),
+    });
+    throw new Error(`${label}: ${err?.message ?? String(err)}`);
   }
-  throw new Error(`${label}: ${(lastErr as Error)?.message ?? String(lastErr)}`);
+}
+
+/**
+ * How long a run may sit in `running` before it is presumed dead.
+ *
+ * A worker that dies mid-sync never writes its finishing row, so without an
+ * upper bound one crash would block every future sync permanently. A run that
+ * has outlived this is treated as gone, not as in progress.
+ */
+const STALE_RUN_MINUTES = 30;
+
+/**
+ * A sync already running, or one started within the last few minutes.
+ *
+ * Repeated "Sync now" clicks must not each start their own pull: that puts read
+ * volume back on the user's click rate, which is what syncing on a schedule
+ * exists to prevent.
+ */
+export async function syncInFlight(minIntervalMinutes = 5): Promise<{ id: string; startedAt: string } | null> {
+  const row = await get<{ id: string; started_at: string; status: string }>(
+    `SELECT id, started_at, status FROM sync_runs
+      WHERE (status = 'running' AND started_at >= datetime('now', ?))
+         OR started_at >= datetime('now', ?)
+      ORDER BY started_at DESC LIMIT 1`,
+    [`-${STALE_RUN_MINUTES} minutes`, `-${minIntervalMinutes} minutes`],
+  );
+  return row ? { id: row.id, startedAt: row.started_at } : null;
 }
 
 async function upsertDaily(platform: string, accountId: string, points: DailyPoint[]): Promise<number> {
@@ -146,16 +184,31 @@ export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Pro
     if (providers.length === 0) throw new Error("No ad platform is connected.");
 
     for (const provider of providers) {
+      // Skip a platform that is rate-limiting us or out of daily allowance,
+      // rather than spending calls discovering that one at a time.
+      const gate = await platformAllowed(provider.id);
+      if (!gate.ok) {
+        errors.push(`${provider.id}: ${gate.reason}`);
+        continue;
+      }
+
       let refs;
       try {
-        refs = await withRetry(`${provider.id}.listAccounts`, () => provider.listAccounts());
+        refs = await read(`${provider.id}.listAccounts`, { platform: provider.id }, () =>
+          provider.listAccounts(),
+        );
         apiCalls++;
       } catch (err: any) {
         errors.push(err.message);
         continue;
       }
 
+      // Set when the platform starts rejecting us mid-run: stop the whole
+      // platform, not just the account we happened to be on.
+      let halted = false;
+
       for (const ref of refs) {
+        if (halted) break;
         accounts++;
         await run(
           `INSERT INTO ad_accounts (id, platform, name, currency, first_seen, last_seen)
@@ -167,18 +220,31 @@ export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Pro
 
         for (const w of windows(since, until)) {
           try {
-            const points = await withRetry(
+            const points = await read(
               `${provider.id}.dailySeries(${ref.id} ${w.since}..${w.until})`,
+              { platform: provider.id, accountId: ref.id },
               () => (provider as AdProvider).dailySeries(ref.id, w.since, w.until),
             );
             apiCalls++;
             rowsWritten += await upsertDaily(ref.platform, ref.id, points);
           } catch (err: any) {
             errors.push(err.message);
+            // A platform that just started rejecting us is left alone for the
+            // rest of the run, rather than being asked once per remaining
+            // window and once per remaining account.
+            if (!(await platformAllowed(provider.id)).ok) {
+              halted = true;
+              break;
+            }
           }
         }
       }
     }
+
+    // The budget only ever looks at today's calls and the last half hour of
+    // failures, so older rows are dead weight. Pruned here rather than left to
+    // grow: this table is written on every platform call.
+    await run("DELETE FROM platform_reads WHERE at < datetime('now', '-30 days')");
 
     const status: SyncResult["status"] =
       errors.length === 0 ? "ok" : rowsWritten > 0 ? "partial" : "failed";
