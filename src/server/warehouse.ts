@@ -146,7 +146,7 @@ export async function warehouseAccountReport(
     kpis: buildKpis(cur, prev),
     daily,
     channels: [{ platform: account.platform, metrics: cur }],
-    issues: deriveIssues(cur, prev, daily),
+    issues: deriveIssues(cur, prev, daily, account.currency),
     generatedAt: new Date().toISOString(),
     preview: false,
   };

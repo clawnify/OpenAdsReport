@@ -131,7 +131,7 @@ api.get("/api/portfolio", async (c) => {
       await Promise.all(
         accounts.slice(0, 3).map(async (account) => ({
           account,
-          issues: await hintsFor(c.env, account, deriveIssues(account.metrics, account.prev, []), range.days),
+          issues: await hintsFor(c.env, account, deriveIssues(account.metrics, account.prev, [], account.currency), range.days),
         })),
       )
     ).filter((t) => t.issues.length > 0);
