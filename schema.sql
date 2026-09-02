@@ -54,3 +54,35 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   api_calls    INTEGER NOT NULL DEFAULT 0,         -- platform reads this run actually spent
   error        TEXT
 );
+
+-- Every live read of an ad platform, and what it returned.
+--
+-- The dashboard is served entirely from `ad_daily`, but report recipes still
+-- need per-entity grains the daily table does not hold (search terms, per-ad
+-- fatigue, account configuration), so those are fetched live. This table is
+-- what keeps "live" from meaning "unbounded": it is a budget, a cooldown, and
+-- the throttle signal we cannot otherwise see.
+--
+-- That last part matters. Ad platforms publish their rate-limit state in
+-- response headers, but a connection resolves to `{ data, error, successful }`
+-- with no headers attached, so the app cannot read the gauge. Recent failures
+-- recorded here are the substitute: they are the only evidence available that a
+-- platform is unhappy, and both platforms are explicit that the correct
+-- response to being limited is to stop calling rather than to retry.
+--
+-- `payload` caches what a read returned, so a repeat within the cooldown is
+-- answered from here rather than by spending the quota again.
+CREATE TABLE IF NOT EXISTS platform_reads (
+  id         TEXT    PRIMARY KEY,
+  platform   TEXT    NOT NULL,                     -- 'meta' | 'google' | 'google_analytics'
+  account_id TEXT    NOT NULL DEFAULT '',          -- '' for account-independent reads
+  kind       TEXT    NOT NULL,                     -- 'sync' | a recipe id
+  at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  calls      INTEGER NOT NULL DEFAULT 0,           -- platform operations this read spent
+  outcome    TEXT    NOT NULL,                     -- 'ok' | 'failed'
+  detail     TEXT,
+  payload    TEXT                                  -- JSON result, when small enough to reuse
+);
+
+CREATE INDEX IF NOT EXISTS idx_platform_reads_lookup ON platform_reads (platform, account_id, kind, at);
+CREATE INDEX IF NOT EXISTS idx_platform_reads_platform ON platform_reads (platform, at);

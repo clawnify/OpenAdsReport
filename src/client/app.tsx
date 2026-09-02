@@ -61,6 +61,8 @@ type ReportDoc = {
   range: { since: string; until: string; days: number };
   health: { label: "Healthy" | "Watch" | "At risk"; tone: Tone; line: string };
   sections: ReportSection[]; daily: DailyPoint[]; ai: boolean; preview: boolean; generatedAt: string;
+  /** Set when the recipe's dataset was reused from a recent pull rather than fetched fresh. */
+  reusedData?: boolean; dataNote?: string;
 };
 type RecipeMeta = { id: string; name: string; blurb: string; available: boolean; platforms: Platform[]; locked?: string };
 
@@ -913,7 +915,12 @@ export function App() {
             {report ? (
               <>
                 <div className="no-print flex items-center justify-between gap-3">
-                  <span className="text-[12px] text-[#475569]">{report.ai ? "Analysis by AI" : "Rule-based analysis"}</span>
+                  <span className="text-[12px] text-[#475569]">
+                    {report.ai ? "Analysis by AI" : "Rule-based analysis"}
+                    {report.reusedData && (
+                      <span className="ml-2 text-[#92400E]" title={report.dataNote}>· reused recent data</span>
+                    )}
+                  </span>
                   <button onClick={() => window.print()} className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-[6px] text-[13px] font-medium bg-white border border-[#E2E8F0] text-[#1A202C] hover:bg-[#F1F5F9] transition-colors">
                     <Download className="w-4 h-4" />Download PDF
                   </button>
