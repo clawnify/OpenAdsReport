@@ -16,7 +16,7 @@
 // and the platform's own utilization headers never reach us. We cannot watch
 // the gauge, so we keep the call count structurally low instead.
 
-import { get, run } from "@clawnify/db";
+import { get, query, run } from "@clawnify/db";
 import type { AdProvider, DailyPoint } from "./providers/types";
 import { connectedProviders } from "./providers";
 import type { Bindings } from "./env";
@@ -39,6 +39,35 @@ const CHUNK_DAYS = 14;
 
 /** Rows per INSERT. D1 caps bound parameters per statement; 8 columns x 10 rows stays clear of it. */
 const ROWS_PER_INSERT = 10;
+
+/**
+ * How much history the warehouse keeps, in days. Two years covers every
+ * year-over-year comparison a report asks for; older rows are pruned on each
+ * sync. `ADS_RETENTION_DAYS` overrides it, never below the backfill window,
+ * because a warehouse that forgets what the first sync just pulled is a bug.
+ */
+const DEFAULT_RETENTION_DAYS = 730;
+
+function retentionDays(env: Bindings): number {
+  const n = parseInt(env.ADS_RETENTION_DAYS ?? "", 10);
+  return Number.isFinite(n) && n > 0 ? Math.max(n, BACKFILL_DAYS) : DEFAULT_RETENTION_DAYS;
+}
+
+/** Freshness only needs the recent entries of the sync log. */
+const SYNC_RUNS_RETENTION_DAYS = 90;
+
+/**
+ * Daily syncs a platform must be absent from before its rows are purged.
+ *
+ * "Not connected" is not a definitive signal: the connections SDK reports a
+ * platform as disconnected when the credential broker is unreachable, exactly
+ * as when the user revoked it. Deleting an advertiser's history on a broker
+ * blip would be the wrong trade, so a platform has to be missing across this
+ * many consecutive daily runs before it counts as gone. Three days is short
+ * enough to honour "disconnect means the data goes too" and long enough that
+ * no outage we have seen would trigger it.
+ */
+const DISCONNECT_GRACE_DAYS = 3;
 
 const iso = (d: Date) => d.toISOString().split("T")[0];
 
@@ -150,10 +179,48 @@ async function upsertDaily(platform: string, accountId: string, points: DailyPoi
   return written;
 }
 
+/**
+ * Drop everything the warehouse holds for platforms that are no longer
+ * connected and have stayed that way past the grace period. Returns the
+ * platforms purged.
+ *
+ * Someone who revokes an integration reasonably expects the data pulled under
+ * it to go with it; this is what makes that true, one sync later.
+ */
+async function purgeDisconnected(connected: string[]): Promise<string[]> {
+  const rows = await query<{ platform: string; last_seen: string }>(
+    "SELECT platform, MAX(last_seen) AS last_seen FROM ad_accounts GROUP BY platform",
+  );
+  const purged: string[] = [];
+  for (const row of rows) {
+    if (connected.includes(row.platform)) continue;
+    if (Date.now() - Date.parse(row.last_seen.replace(" ", "T") + "Z") < DISCONNECT_GRACE_DAYS * 86_400_000) continue;
+    for (const table of ["ad_daily", "platform_reads", "ad_accounts"]) {
+      await run(`DELETE FROM ${table} WHERE platform = ?`, [row.platform]);
+    }
+    purged.push(row.platform);
+  }
+  return purged;
+}
+
+/** Enforce the retention windows. Cheap, and run on every sync so nothing grows without bound. */
+async function prune(env: Bindings): Promise<void> {
+  await run("DELETE FROM ad_daily WHERE date < ?", [daysAgo(retentionDays(env))]);
+  await run("DELETE FROM sync_runs WHERE started_at < datetime('now', ?)", [`-${SYNC_RUNS_RETENTION_DAYS} days`]);
+  // The budget only ever looks at today's calls and the last half hour of
+  // failures, so older rows are dead weight; this table is written on every
+  // platform call.
+  await run("DELETE FROM platform_reads WHERE at < datetime('now', '-30 days')");
+}
+
 export interface SyncResult {
   id: string;
   status: "ok" | "partial" | "failed";
+  /** Platforms that were connected when the run started. */
+  platforms: number;
   accounts: number;
+  /** Platforms whose warehoused rows were dropped this run because they stayed disconnected. */
+  purged: string[];
   rowsWritten: number;
   apiCalls: number;
   since: string;
@@ -176,11 +243,19 @@ export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Pro
   let accounts = 0;
   let rowsWritten = 0;
   let apiCalls = 0;
+  let purged: string[] = [];
+  let platforms = 0;
 
   await run("INSERT INTO sync_runs (id, status) VALUES (?, 'running')", [id]);
 
   try {
     const providers = await connectedProviders(env);
+    platforms = providers.length;
+    // Housekeeping first, and regardless of whether anything is connected: a
+    // platform that was disconnected is exactly the case with no provider to
+    // sync, and its rows still have to go.
+    purged = await purgeDisconnected(providers.map((p) => p.id));
+    await prune(env);
     if (providers.length === 0) throw new Error("No ad platform is connected.");
 
     for (const provider of providers) {
@@ -241,11 +316,6 @@ export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Pro
       }
     }
 
-    // The budget only ever looks at today's calls and the last half hour of
-    // failures, so older rows are dead weight. Pruned here rather than left to
-    // grow: this table is written on every platform call.
-    await run("DELETE FROM platform_reads WHERE at < datetime('now', '-30 days')");
-
     const status: SyncResult["status"] =
       errors.length === 0 ? "ok" : rowsWritten > 0 ? "partial" : "failed";
     await run(
@@ -253,13 +323,13 @@ export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Pro
               rows_written = ?, api_calls = ?, error = ? WHERE id = ?`,
       [status, accounts, rowsWritten, apiCalls, errors.length ? errors.slice(0, 5).join(" | ") : null, id],
     );
-    return { id, status, accounts, rowsWritten, apiCalls, since, until, errors };
+    return { id, status, platforms, accounts, purged, rowsWritten, apiCalls, since, until, errors };
   } catch (err: any) {
     await run(
       `UPDATE sync_runs SET finished_at = datetime('now'), status = 'failed', error = ? WHERE id = ?`,
       [err.message, id],
     );
-    return { id, status: "failed", accounts, rowsWritten, apiCalls, since, until, errors: [err.message] };
+    return { id, status: "failed", platforms, accounts, purged, rowsWritten, apiCalls, since, until, errors: [err.message] };
   }
 }
 

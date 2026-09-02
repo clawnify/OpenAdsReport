@@ -88,11 +88,15 @@ const maySpendQuota = (c: any): boolean => {
 /** Which platforms are connected, and whether we're in sample/preview mode. */
 api.get("/api/state", async (c) => {
   const providers = await connectedProviders(c.env);
+  const [freshness, mode] = await Promise.all([warehouseFreshness(), dataMode(c.env, providers)]);
   // The watchdog. With a platform connected there must always be a sync
   // booked: this books the first one on a fresh deployment and re-books when
-  // the chain has broken. One D1 read when everything is healthy.
-  if (providers.length > 0) await ensureScheduled(c.env, new URL(c.req.url).origin);
-  const [freshness, mode] = await Promise.all([warehouseFreshness(), dataMode(c.env, providers)]);
+  // the chain has broken. It also keeps the chain alive while warehoused rows
+  // outlive their connection, because the sync is what purges them. One D1
+  // read when everything is healthy.
+  if (providers.length > 0 || mode === "warehouse") {
+    await ensureScheduled(c.env, new URL(c.req.url).origin);
+  }
   return c.json({
     providers: providers.map((p) => ({ id: p.id, connected: true })),
     preview: mode === "preview",
@@ -361,8 +365,11 @@ api.post("/api/sync", async (c) => {
     result = await runSync(c.env, { full });
   } finally {
     // Booked whatever happened above. A run that threw before recording
-    // itself must not also take the schedule down with it.
-    next = await ensureScheduled(c.env, url.origin, { afterRun: true });
+    // itself must not also take the schedule down with it. The one time the
+    // chain is allowed to end is when nothing is connected and nothing is
+    // left to purge; the watchdog restarts it on the next connection.
+    const done = result?.platforms === 0 && !(await hasWarehouseData());
+    next = done ? null : await ensureScheduled(c.env, url.origin, { afterRun: true });
   }
   return c.json(
     { ...result, full, nextJobId: next?.jobId ?? null, nextSyncAt: next?.runAt ?? null },

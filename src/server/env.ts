@@ -13,6 +13,8 @@ export type Bindings = {
   // The D1 warehouse binding (env.DB) is read by @clawnify/db through the
   // initDB middleware createApp({ db: true }) installs, so it isn't named here.
   OPENROUTER_API_KEY?: string;
+  /** Days of daily rows the warehouse keeps (default 730). */
+  ADS_RETENTION_DAYS?: string;
   // Local-dev fallbacks:
   METAADS_BEARER_TOKEN?: string;
   GOOGLEADS_ACCESS_TOKEN?: string;

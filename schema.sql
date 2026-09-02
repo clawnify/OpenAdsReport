@@ -16,6 +16,12 @@
 -- refresh every ~15 minutes and "do not change after 28 days of being
 -- reported", so rows older than that are settled and re-reading them spends
 -- quota to rewrite identical numbers.
+--
+-- Nothing here grows without bound. Each sync prunes `ad_daily` past the
+-- retention window (two years by default, ADS_RETENTION_DAYS to change it),
+-- trims `sync_runs` to the last 90 days, and drops every row belonging to a
+-- platform that has stayed disconnected for three consecutive daily runs —
+-- disconnecting an integration takes the data pulled under it with it.
 
 CREATE TABLE IF NOT EXISTS ad_accounts (
   id         TEXT NOT NULL,                        -- platform account id, in the platform's own form
