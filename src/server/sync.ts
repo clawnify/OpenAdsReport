@@ -280,10 +280,11 @@ const SYNC_HOUR_UTC = 6;
 
 /**
  * How late a booking may run before the watchdog asks the queue whether the
- * job is still alive. A healthy queue delivers within seconds, so anything
- * past this is worth one round-trip to check.
+ * job is still alive. The queue sweeps every minute and a job that is being
+ * retried is still "pending" with its run time pushed out by back-off, so
+ * anything later than this is worth one round-trip to check.
  */
-const OVERDUE_GRACE_MS = 2 * 60 * 60 * 1000;
+const OVERDUE_GRACE_MS = 15 * 60 * 1000;
 
 interface Booking {
   jobId: string;
@@ -308,10 +309,12 @@ function nextSlot(): Date {
 /**
  * Book a sync at `runAt` and record it.
  *
- * The idempotency key is the target minute, so two requests that both notice
- * the same gap (two tabs loading at once, a retried delivery) collapse to one
- * job rather than doubling the platform reads. A recovery booked later gets a
- * new key and is not swallowed by a job that already ran or failed.
+ * The idempotency key is this app's host plus the target minute, so two
+ * requests that both notice the same gap (two tabs loading at once, a retried
+ * delivery) collapse to one job rather than doubling the platform reads, while
+ * a recovery booked later gets a new key and is not swallowed by a job that
+ * already ran or failed. The host is in the key because the queue dedupes per
+ * org: two instances of this app in one org must not share a booking.
  *
  * `origin` is the app's own base URL, taken from the incoming request so the
  * template carries no hardcoded slug.
@@ -322,7 +325,7 @@ async function bookSync(env: Bindings, origin: string, runAt: Date): Promise<Boo
     const job = await enqueueJob(env, {
       targetUrl: `${origin}/api/sync`,
       runAt,
-      idempotencyKey: `ads-sync-${runAt.toISOString().slice(0, 16)}`,
+      idempotencyKey: `ads-sync-${new URL(origin).host}-${runAt.toISOString().slice(0, 16)}`,
       maxAttempts: 3,
     });
     const booking = { jobId: job.id, runAt: runAt.toISOString() };
