@@ -159,23 +159,42 @@ export interface Freshness {
   accounts: number;
   /** Most recent day with any data, across all accounts. */
   throughDate: string | null;
+  /** Days between today (UTC) and throughDate; null with no data. */
+  daysBehind: number | null;
+  /**
+   * The numbers have stopped moving. A healthy chain lands yesterday's rows
+   * every morning, so more than a day behind means a sync has not run or has
+   * not written anything — the failure mode a warehouse trades a quota failure
+   * for, and the one the reader has to be told about.
+   */
+  stale: boolean;
+  /** When the next sync is booked to run, if one is. */
+  nextSyncAt: string | null;
   error: string | null;
 }
 
 export async function warehouseFreshness(): Promise<Freshness> {
-  const [run, coverage] = await Promise.all([
+  const [run, coverage, booking] = await Promise.all([
     get<{ finished_at: string | null; status: string; error: string | null }>(
       "SELECT finished_at, status, error FROM sync_runs ORDER BY started_at DESC LIMIT 1",
     ),
     get<{ n: number; through: string | null }>(
       "SELECT COUNT(DISTINCT platform || account_id) AS n, MAX(date) AS through FROM ad_daily",
     ),
+    get<{ run_at: string }>("SELECT run_at FROM sync_schedule WHERE id = 1"),
   ]);
+  const through = coverage?.through ?? null;
+  const daysBehind = through
+    ? Math.max(0, Math.round((Date.now() - Date.parse(through + "T00:00:00Z")) / 86_400_000))
+    : null;
   return {
     lastSyncAt: run?.finished_at ?? null,
     status: run?.status ?? null,
     accounts: Number(coverage?.n ?? 0),
-    throughDate: coverage?.through ?? null,
+    throughDate: through,
+    daysBehind,
+    stale: daysBehind !== null && daysBehind > 1,
+    nextSyncAt: booking?.run_at ?? null,
     error: run?.error ?? null,
   };
 }

@@ -22,7 +22,7 @@ import { RECIPES, generateReport } from "./report";
 import {
   hasWarehouseData, warehouseAccountReport, warehouseAccounts, warehouseFreshness, warehouseSummaries,
 } from "./warehouse";
-import { runSync, scheduleNextSync, syncInFlight } from "./sync";
+import { ensureScheduled, runSync, syncInFlight } from "./sync";
 import { BudgetExceeded, budgetStatus, guardedRead } from "./budget";
 import { verifyDelivery } from "@clawnify/queue";
 
@@ -88,6 +88,10 @@ const maySpendQuota = (c: any): boolean => {
 /** Which platforms are connected, and whether we're in sample/preview mode. */
 api.get("/api/state", async (c) => {
   const providers = await connectedProviders(c.env);
+  // The watchdog. With a platform connected there must always be a sync
+  // booked: this books the first one on a fresh deployment and re-books when
+  // the chain has broken. One D1 read when everything is healthy.
+  if (providers.length > 0) await ensureScheduled(c.env, new URL(c.req.url).origin);
   const [freshness, mode] = await Promise.all([warehouseFreshness(), dataMode(c.env, providers)]);
   return c.json({
     providers: providers.map((p) => ({ id: p.id, connected: true })),
@@ -349,10 +353,21 @@ api.post("/api/sync", async (c) => {
     );
   }
 
-  const full = new URL(c.req.url).searchParams.get("full") === "1" || !(await hasWarehouseData());
-  const result = await runSync(c.env, { full });
-  const nextJobId = await scheduleNextSync(c.env, new URL(c.req.url).origin);
-  return c.json({ ...result, full, nextJobId }, result.status === "failed" ? 502 : 200);
+  const url = new URL(c.req.url);
+  const full = url.searchParams.get("full") === "1" || !(await hasWarehouseData());
+  let result;
+  let next;
+  try {
+    result = await runSync(c.env, { full });
+  } finally {
+    // Booked whatever happened above. A run that threw before recording
+    // itself must not also take the schedule down with it.
+    next = await ensureScheduled(c.env, url.origin, { afterRun: true });
+  }
+  return c.json(
+    { ...result, full, nextJobId: next?.jobId ?? null, nextSyncAt: next?.runAt ?? null },
+    result.status === "failed" ? 502 : 200,
+  );
 });
 
 export default api;
