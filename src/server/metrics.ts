@@ -105,15 +105,21 @@ export function resolveRange(opts: { since?: string; until?: string; days?: numb
 // the deep audits (keywords, search terms, feed health, creative fatigue) belong
 // to the Phase 2 agent-generated report engine, not to live API math.
 
-export function deriveIssues(cur: Metrics, prev: Metrics | null, daily: DailyPoint[]): Issue[] {
+/**
+ * `currency` is the account's own (ISO 4217, as the platform reports it) so a
+ * EUR or GBP account is never told what it spent in dollars. Defaults to USD
+ * only for the sample data, which is minted in USD.
+ */
+export function deriveIssues(cur: Metrics, prev: Metrics | null, daily: DailyPoint[], currency = "USD"): Issue[] {
   const issues: Issue[] = [];
+  const money = (n: number) => formatMoney(n, currency);
   const drop = (a: number, b: number | undefined) => (b && b > 0 ? ((a - b) / b) * 100 : null);
 
   if (cur.spend > 0 && cur.roas < 1) {
     issues.push({
       id: "roas-below-1",
       title: "Account is losing money",
-      detail: `ROAS is ${cur.roas.toFixed(2)}x — every dollar of the ${money(cur.spend)} spent is returning less than a dollar back.`,
+      detail: `ROAS is ${cur.roas.toFixed(2)}x — every unit of the ${money(cur.spend)} spent is returning less than it cost.`,
       action: "Pause the lowest-ROAS campaigns and shift budget to your top performers before scaling anything.",
       severity: "high",
     });
@@ -175,8 +181,8 @@ export function deriveIssues(cur: Metrics, prev: Metrics | null, daily: DailyPoi
   return issues;
 }
 
-const money = (n: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: n < 100 ? 2 : 0 }).format(n);
+const formatMoney = (n: number, currency: string) =>
+  new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: n < 100 ? 2 : 0 }).format(n);
 
 const formatNum = (n: number) =>
   n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(Math.round(n));

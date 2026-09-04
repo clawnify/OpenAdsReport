@@ -163,7 +163,7 @@ export class GoogleProvider implements AdProvider {
       kpis: buildKpis(cur, prev),
       daily,
       channels: [{ platform: "google", metrics: cur }],
-      issues: deriveIssues(cur, prev, daily),
+      issues: deriveIssues(cur, prev, daily, account.currency),
       generatedAt: new Date().toISOString(),
       preview: false,
     };

@@ -207,7 +207,7 @@ function legacyHeuristic(report: AccountReport): Analysis {
     ? ({ spend: report.kpis.cost.prev, roas: report.kpis.roas.prev, conversions: report.kpis.conversions.prev,
          convRate: report.kpis.convRate.prev, clicks: report.kpis.clicks.prev, ctr: report.kpis.ctr.prev } as any)
     : null;
-  const issues: Issue[] = deriveIssues(cur, prev, report.daily);
+  const issues: Issue[] = deriveIssues(cur, prev, report.daily, report.account.currency);
   const roas = report.kpis.roas.value;
   const summary =
     roas >= 2.5

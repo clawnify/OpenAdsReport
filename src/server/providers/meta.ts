@@ -119,7 +119,7 @@ export class MetaProvider implements AdProvider {
       kpis: buildKpis(curM, prevM),
       daily,
       channels: [{ platform: "meta", metrics: curM }],
-      issues: deriveIssues(curM, prevM, daily),
+      issues: deriveIssues(curM, prevM, daily, account.currency),
       generatedAt: new Date().toISOString(),
       preview: false,
     };
