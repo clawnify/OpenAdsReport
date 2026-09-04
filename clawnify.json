@@ -11,6 +11,6 @@
     "credentials": ["metaads", "googleads", "google_analytics"]
   },
   "env": {
-    "optional": ["OPENROUTER_API_KEY", "GOOGLEADS_DEVELOPER_TOKEN", "GOOGLEADS_LOGIN_CUSTOMER_ID"]
+    "optional": ["OPENROUTER_API_KEY", "ADS_RETENTION_DAYS", "GOOGLEADS_DEVELOPER_TOKEN", "GOOGLEADS_LOGIN_CUSTOMER_ID"]
   }
 }
