@@ -96,6 +96,16 @@ The platforms are read by one scheduled job ([`src/server/sync.ts`](src/server/s
 Writes are the opposite: anything that changes an account goes straight to the
 platform API. Reads from the warehouse, writes to the API.
 
+The warehouse does not grow without bound. Each sync prunes daily rows older
+than the retention window (**two years** by default; set `ADS_RETENTION_DAYS`
+to change it, never below the 90-day backfill), trims the sync log to the last
+90 days, and drops every row that belongs to a platform that has stayed
+disconnected for three consecutive daily runs. So disconnecting Meta or Google
+in the Clawnify dashboard also removes what was pulled under that connection,
+a few days later. The delay is deliberate: a credential broker that is briefly
+unreachable looks the same as a revoked connection, and an advertiser's history
+should not be deleted over a blip.
+
 Because the numbers are synced rather than live, the UI always states how fresh
 they are (`Synced 2 hours ago · data through 2026-08-30`), and `/api/state`
 returns the same thing as structured data (`freshness.stale`, `daysBehind`,
@@ -130,6 +140,8 @@ For local `pnpm dev`, copy `.dev.vars.example` → `.dev.vars`:
 - Optional: `GOOGLEADS_API_VERSION` (default `v21`) — bump if Google has retired
   that API version.
 - Optional: `OPENROUTER_API_KEY` for AI-generated issue hints.
+- Optional: `ADS_RETENTION_DAYS` — how much daily history the warehouse keeps
+  (default `730`).
 
 ## Develop & deploy
 
