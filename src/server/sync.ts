@@ -263,34 +263,129 @@ export async function runSync(env: Bindings, opts: { full?: boolean } = {}): Pro
   }
 }
 
+// ── Scheduling ──────────────────────────────────────────────────────────────
+//
+// The platform queue is the scheduler: each run books the next one, so the
+// cadence survives redeploys without any cron config in the template. That
+// chain has two ways to break — nothing ever starts it on a fresh deployment,
+// and anything that stops a run reaching its booking (a worker exception, a
+// delivery that exhausted its attempts, a queue outage) ends it silently. Both
+// are covered by keeping the booking in `sync_schedule` and letting the request
+// path act as the watchdog: /api/state re-books whenever the booking is overdue
+// and its job is no longer alive, and books the very first run the moment a
+// platform is connected.
+
+/** Hour (UTC) the daily sync runs. Early enough for most of yesterday to be settled. */
+const SYNC_HOUR_UTC = 6;
+
 /**
- * Book tomorrow's sync.
+ * How late a booking may run before the watchdog asks the queue whether the
+ * job is still alive. The queue sweeps every minute and a job that is being
+ * retried is still "pending" with its run time pushed out by back-off, so
+ * anything later than this is worth one round-trip to check.
+ */
+const OVERDUE_GRACE_MS = 15 * 60 * 1000;
+
+interface Booking {
+  jobId: string;
+  runAt: string;
+}
+
+export async function currentBooking(): Promise<Booking | null> {
+  const row = await get<{ job_id: string; run_at: string }>(
+    "SELECT job_id, run_at FROM sync_schedule WHERE id = 1",
+  );
+  return row ? { jobId: row.job_id, runAt: row.run_at } : null;
+}
+
+/** The next daily slot: tomorrow at SYNC_HOUR_UTC. */
+function nextSlot(): Date {
+  const next = new Date();
+  next.setUTCDate(next.getUTCDate() + 1);
+  next.setUTCHours(SYNC_HOUR_UTC, 0, 0, 0);
+  return next;
+}
+
+/**
+ * Book a sync at `runAt` and record it.
  *
- * The platform queue is the scheduler: each run schedules the next one, so the
- * cadence survives redeploys without any cron config in the template. The
- * idempotency key is the target date, so double-enqueueing (a manual sync on
- * the same day, a retried delivery) collapses to one job rather than doubling
- * the platform reads.
+ * The idempotency key is this app's host plus the target minute, so two
+ * requests that both notice the same gap (two tabs loading at once, a retried
+ * delivery) collapse to one job rather than doubling the platform reads, while
+ * a recovery booked later gets a new key and is not swallowed by a job that
+ * already ran or failed. The host is in the key because the queue dedupes per
+ * org: two instances of this app in one org must not share a booking.
  *
  * `origin` is the app's own base URL, taken from the incoming request so the
  * template carries no hardcoded slug.
  */
-export async function scheduleNextSync(env: Bindings, origin: string): Promise<string | null> {
-  if (!env.CLAWNIFY_TOKEN) return null;
-  const next = new Date();
-  next.setUTCDate(next.getUTCDate() + 1);
-  next.setUTCHours(6, 0, 0, 0);
+async function bookSync(env: Bindings, origin: string, runAt: Date): Promise<Booking | null> {
   try {
     const { enqueueJob } = await import("@clawnify/queue");
     const job = await enqueueJob(env, {
       targetUrl: `${origin}/api/sync`,
-      runAt: next,
-      idempotencyKey: `ads-sync-${iso(next)}`,
+      runAt,
+      idempotencyKey: `ads-sync-${new URL(origin).host}-${runAt.toISOString().slice(0, 16)}`,
       maxAttempts: 3,
     });
-    return job.id;
+    const booking = { jobId: job.id, runAt: runAt.toISOString() };
+    await run(
+      `INSERT INTO sync_schedule (id, job_id, run_at, booked_at) VALUES (1, ?, ?, datetime('now'))
+       ON CONFLICT (id) DO UPDATE SET job_id = excluded.job_id, run_at = excluded.run_at, booked_at = excluded.booked_at`,
+      [booking.jobId, booking.runAt],
+    );
+    return booking;
   } catch {
-    // A missing or unavailable queue must not fail the sync that just succeeded.
+    // A missing or unavailable queue must not fail the request that noticed
+    // the gap; the next request will try again.
     return null;
   }
+}
+
+/** Whether the queue still intends to deliver a job. Unknown counts as no. */
+async function jobAlive(env: Bindings, jobId: string): Promise<boolean> {
+  try {
+    const { getJob } = await import("@clawnify/queue");
+    const job = await getJob(env, jobId);
+    return job.status === "pending" || job.status === "queued";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Make sure a sync is booked, and book one if not.
+ *
+ *   afterRun   — called at the end of every sync, whatever its outcome. The
+ *                booking that has just come due is the run we are in (or a
+ *                dead one), so the next daily slot is booked. Independent of
+ *                the sync succeeding: a failed run still books its successor.
+ *   watchdog   — called from the request path once a platform is connected.
+ *                Nothing booked means the chain never started (a fresh
+ *                deployment), so the first run is booked immediately; a
+ *                booking overdue by more than the grace whose job the queue no
+ *                longer holds means the chain broke, and a run is booked
+ *                immediately to close the gap.
+ *
+ * Costs one D1 read on the healthy path; the queue is only asked when
+ * something looks wrong.
+ */
+export async function ensureScheduled(
+  env: Bindings,
+  origin: string,
+  opts: { afterRun?: boolean } = {},
+): Promise<Booking | null> {
+  if (!env.CLAWNIFY_TOKEN) return null;
+  const booking = await currentBooking();
+  const now = Date.now();
+
+  if (booking && Date.parse(booking.runAt) > now) return booking;
+  if (opts.afterRun) return bookSync(env, origin, nextSlot());
+
+  if (booking) {
+    const overdueBy = now - Date.parse(booking.runAt);
+    if (overdueBy < OVERDUE_GRACE_MS) return booking;
+    if (await jobAlive(env, booking.jobId)) return booking;
+  }
+  return bookSync(env, origin, new Date());
 }

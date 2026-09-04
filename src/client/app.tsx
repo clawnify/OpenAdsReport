@@ -175,7 +175,8 @@ function KpiCard({
  */
 type Freshness = {
   lastSyncAt: string | null; status: string | null; accounts: number;
-  throughDate: string | null; error: string | null;
+  throughDate: string | null; daysBehind: number | null; stale: boolean;
+  nextSyncAt: string | null; error: string | null;
 };
 
 function sinceLabel(iso: string | null): string {
@@ -196,7 +197,7 @@ function SyncBar({ freshness, needsSync, syncing, onSync }: {
   if (needsSync) {
     return (
       <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 rounded-[6px] ${C.card} text-[13px] ${C.text} mb-4 no-print`}>
-        <span><span className="font-semibold">Connected, not yet synced.</span> Pull your history once and the dashboard fills in.</span>
+        <span><span className="font-semibold">Connected, not yet synced.</span> The first sync is booked and the dashboard fills in when it lands — or pull your history now.</span>
         <button onClick={onSync} disabled={syncing}
           className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-[6px] text-[13px] font-medium bg-[#DD5164] text-white hover:bg-[#C53A4E] transition-colors disabled:opacity-50">
           <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
@@ -206,6 +207,24 @@ function SyncBar({ freshness, needsSync, syncing, onSync }: {
     );
   }
   if (!freshness?.lastSyncAt) return null;
+  if (freshness.stale) {
+    // The numbers are still rendered — they are real, just old — but a reader
+    // must not mistake a stopped sync for a quiet account.
+    return (
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 rounded-[6px] border border-[#F59E0B]/40 bg-[#FFFBEB] text-[13px] text-[#78350F] mb-4 no-print">
+        <span>
+          <span className="font-semibold">These numbers have stopped updating.</span>{" "}
+          Data runs through {freshness.throughDate}, {freshness.daysBehind} days behind. Last sync {sinceLabel(freshness.lastSyncAt)}
+          {freshness.status && freshness.status !== "ok" ? ` (${freshness.status}${freshness.error ? `: ${freshness.error}` : ""})` : ""}.
+        </span>
+        <button onClick={onSync} disabled={syncing}
+          className="ml-auto inline-flex items-center gap-1.5 h-8 px-3 rounded-[6px] text-[13px] font-medium bg-[#DD5164] text-white hover:bg-[#C53A4E] transition-colors disabled:opacity-50">
+          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? "animate-spin" : ""}`} />
+          {syncing ? "Syncing…" : "Sync now"}
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-[#64748B] mb-4 no-print">
       <span className="tnum">

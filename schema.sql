@@ -55,6 +55,21 @@ CREATE TABLE IF NOT EXISTS sync_runs (
   error        TEXT
 );
 
+-- The one booked sync.
+--
+-- Each run books its successor on the platform queue, and that chain is the
+-- whole scheduler. This row is what lets the request path see the chain: a
+-- booking whose time has passed with no fresh run behind it means the chain
+-- broke (a worker exception before the booking, a delivery that exhausted its
+-- attempts, a queue outage), and /api/state re-books it. Without the row the
+-- app could not tell "scheduled for tomorrow" from "nothing will ever run".
+CREATE TABLE IF NOT EXISTS sync_schedule (
+  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  job_id    TEXT NOT NULL,
+  run_at    TEXT NOT NULL,                         -- ISO-8601 UTC
+  booked_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Every live read of an ad platform, and what it returned.
 --
 -- The dashboard is served entirely from `ad_daily`, but report recipes still

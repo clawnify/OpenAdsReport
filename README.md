@@ -83,8 +83,13 @@ The platforms are read by one scheduled job ([`src/server/sync.ts`](src/server/s
   so re-reading anything older spends your API quota rewriting numbers that
   cannot have changed. The first run backfills 90 days so the charts have
   history on day one.
-- Each run books the next one, so the cadence survives redeploys. `POST /api/sync`
-  also runs it on demand, and the dashboard exposes that as **sync now**.
+- Each run books the next one on the platform queue, so the cadence survives
+  redeploys. The first run is booked the moment a platform is connected, and
+  the booking is kept in `sync_schedule` so the request path can see the chain:
+  if a booking comes due and the queue no longer holds the job, the next
+  dashboard load re-books it. Booking happens whatever the run's outcome, so a
+  failed sync still schedules its successor. `POST /api/sync` also runs it on
+  demand, and the dashboard exposes that as **sync now**.
 - Costs **two API calls per account per day**. The date range is fetched in
   chunks so a long window is never silently truncated by a short response page.
 
@@ -93,7 +98,9 @@ platform API. Reads from the warehouse, writes to the API.
 
 Because the numbers are synced rather than live, the UI always states how fresh
 they are (`Synced 2 hours ago · data through 2026-08-30`), and `/api/state`
-returns the same thing as structured data.
+returns the same thing as structured data (`freshness.stale`, `daysBehind`,
+`nextSyncAt`). More than a day behind and the dashboard says so in a banner
+rather than letting old numbers pass for quiet ones.
 
 ## Credentials
 
