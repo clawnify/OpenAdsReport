@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { AppNav, embedded, reportLocation } from "@clawnify/app/client";
 import { ArrowDown, ArrowUp, Calendar, ChevronDown, RefreshCw, Download, Sparkles } from "lucide-react";
 
 // ── Types (mirror src/server/providers/types.ts) ─────────────────────────────
@@ -121,8 +122,9 @@ function Delta({ d }: { d: MetricDelta }) {
 }
 
 const LOGOS: Record<Platform, string> = {
-  meta: "https://cdn.jsdelivr.net/gh/glincker/thesvg@main/public/icons/meta/default.svg",
-  google: "https://cdn.jsdelivr.net/gh/glincker/thesvg@main/public/icons/google-ads/default.svg",
+  // Served with the app (from glincker/thesvg, MIT) so no third-party request is needed.
+  meta: "/logos/meta.svg",
+  google: "/logos/google-ads.svg",
 };
 
 function PlatformLogo({ platform, size = 14 }: { platform: Platform; size?: number }) {
@@ -709,6 +711,19 @@ function ReportGallery({
 
 const RANGES = [{ label: "7D", days: 7 }, { label: "30D", days: 30 }, { label: "90D", days: 90 }];
 type View = "account" | "portfolio" | "reports";
+const VIEWS: View[] = ["account", "portfolio", "reports"];
+
+// The view, account, range and report live in the query string so a reload
+// (and the dashboard's restored URL) reopens the same screen.
+const initialParams = new URLSearchParams(window.location.search);
+const initialView = (VIEWS as string[]).includes(initialParams.get("view") ?? "") ? (initialParams.get("view") as View) : "portfolio";
+const initialDays = RANGES.some((r) => String(r.days) === initialParams.get("days")) ? Number(initialParams.get("days")) : 30;
+
+const NAV_GROUPS = [{ items: [
+  { id: "portfolio", label: "Portfolio", icon: "layout-dashboard", href: "/?view=portfolio", home: true },
+  { id: "account", label: "Account", icon: "bar-chart-3", href: "/?view=account" },
+  { id: "reports", label: "Reports", icon: "file-text", href: "/?view=reports" },
+] }];
 
 function TopBar({
   view, setView, accounts, accountId, setAccountId, days, setDays, range, refreshing, onRefresh, onGenerate, generating,
@@ -721,11 +736,11 @@ function TopBar({
   const showPicker = view === "account" || view === "reports";
   return (
     <div className="flex flex-col gap-3 mb-5 sm:mb-6 lg:flex-row lg:items-center lg:justify-between no-print">
-      <Segmented value={view} onChange={setView} options={[
+      {embedded ? <div /> : <Segmented value={view} onChange={setView} options={[
         { value: "account", label: "Account View" },
         { value: "portfolio", label: "Portfolio View" },
         { value: "reports", label: "Reports" },
-      ]} />
+      ]} />}
 
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
         {showPicker && (
@@ -768,14 +783,14 @@ function TopBar({
 // ── App ──────────────────────────────────────────────────────────────────────
 
 export function App() {
-  const [view, setView] = useState<View>("portfolio");
+  const [view, setView] = useState<View>(initialView);
   const [accounts, setAccounts] = useState<AccountRef[]>([]);
-  const [accountId, setAccountId] = useState<string | null>(null);
-  const [days, setDays] = useState(30);
+  const [accountId, setAccountId] = useState<string | null>(initialParams.get("account"));
+  const [days, setDays] = useState(initialDays);
   const [portfolio, setPortfolio] = useState<PortfolioReport | null>(null);
   const [account, setAccount] = useState<AccountReport | null>(null);
   const [recipes, setRecipes] = useState<RecipeMeta[]>([]);
-  const [recipe, setRecipe] = useState("account-audit");
+  const [recipe, setRecipe] = useState(initialParams.get("report") || "account-audit");
   const [report, setReport] = useState<ReportDoc | null>(null);
   const [generating, setGenerating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -826,7 +841,7 @@ export function App() {
       setAccounts(list);
       setPreviewAccounts(Boolean(data.preview));
       if (data.needsSync) setNeedsSync(true);
-      setAccountId((cur) => cur ?? (list[0]?.id ?? null));
+      setAccountId((cur) => (cur && list.some((a) => a.id === cur) ? cur : list[0]?.id ?? null));
     }).catch(() => {});
     fetch("/api/reports").then((r) => r.json()).then((d) => setRecipes(d.recipes ?? [])).catch(() => {});
   }, []);
@@ -860,6 +875,18 @@ export function App() {
 
   useEffect(() => { setReport(null); }, [accountId, recipe, days]);
 
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", view);
+    url.searchParams.set("days", String(days));
+    if (accountId && view !== "portfolio") url.searchParams.set("account", accountId);
+    else url.searchParams.delete("account");
+    if (view === "reports") url.searchParams.set("report", recipe);
+    else url.searchParams.delete("report");
+    window.history.replaceState(null, "", url);
+    reportLocation(url.pathname + url.search);
+  }, [view, accountId, days, recipe]);
+
   function generate() {
     const acc = accounts.find((a) => a.id === accountId);
     const plat = acc ? `&platform=${acc.platform}` : "";
@@ -874,6 +901,9 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-white">
+      {/* Embedded only: the dashboard sidebar draws these; standalone keeps the view switcher. */}
+      {embedded && <AppNav title="Ads Report" icon="bar-chart-3" groups={NAV_GROUPS} active={view}
+        onNavigate={(item) => setView(item.id as View)} />}
       <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 py-5 sm:py-6 w-full">
         <TopBar
           view={view} setView={setView} accounts={accounts} accountId={accountId} setAccountId={setAccountId}
