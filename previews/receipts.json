@@ -1,0 +1,22 @@
+{
+  "cover-dark": {
+    "composition": "9f860884ab6866439cc34fc98a76cb01065abcf75c931d3f432a9e3eaccdce29",
+    "png": "e37f689f1d45426993f6d9ce8a9efd6953ffc8d6284f6608935a3cea67fb34be"
+  },
+  "cover-light": {
+    "composition": "dc40af47b87ff384301e120c871a19e704c9ea11574bfb507744a85dbd25fd72",
+    "png": "bded6b5f34a824fbff7e6b653d07d27b207677658db2e331d1e0cabd1d538cec"
+  },
+  "account-audit": {
+    "composition": "962b2c50952935883064415ef46db82862c8737f502fddbad7d6157473b8af83",
+    "png": "edd49c8d3aa74426b558aa0c6f727436ac42fe919f095a7524434075ee379992"
+  },
+  "portfolio": {
+    "composition": "411cd607ccc2e19b0b53f3cddf0a50b46aa90766704d34e252f6100edc8e1605",
+    "png": "61b33be366e0b63079d27f49dba76b1c3fadf4316d3167c452f5d9ea8f723a29"
+  },
+  "spreadsheet-to-app": {
+    "composition": "ac0e587e4df17ff457045e2a8d338105753f2f4ed4689ec705b567e440c47174",
+    "png": "1a4cd92fb97c5c3859edc4c2776f8ea290b3b39e214dd13dd41a86e5b66cd894"
+  }
+}
