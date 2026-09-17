@@ -1,0 +1,23 @@
+[
+  {
+    "src": "previews/spreadsheet-to-app.png",
+    "alt": "Conceptual Google Ads report spreadsheet with a broken ROAS formula, overlapped by the OpenAdsReport portfolio view showing the same accounts with synced totals.",
+    "caption": "Stop rebuilding the report.",
+    "width": 1600,
+    "height": 1000
+  },
+  {
+    "src": "previews/portfolio.png",
+    "alt": "Conceptual floating portfolio table of Meta and Google Ads accounts sorted by ROAS, with an overlapping top-issue card for the weakest account.",
+    "caption": "Every account. One table.",
+    "width": 1600,
+    "height": 1000
+  },
+  {
+    "src": "previews/account-audit.png",
+    "alt": "Conceptual account audit scorecard at 58/100 with six category scores, overlapped by a priority fixes panel and a Download PDF button being clicked.",
+    "caption": "A score, then the fix.",
+    "width": 1600,
+    "height": 1000
+  }
+]

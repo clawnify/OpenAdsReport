@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "app": "OpenAdsReport",
+  "repo": "clawnify/OpenAdsReport",
+  "capturedAt": "2026-09-17",
+  "sourceBaseCommit": "3d8c8bd8ef9303194c305a362d9d9b801368caaf",
+  "captureNotes": "Real TaskWindow capture of preview mode (no ad platform connected, so the app serves its built-in fictional sample accounts) on a separate local D1 database. Desktop capture is a 1440×960 emulated touch viewport. The app ships a single light theme, so both covers frame this capture; only the cover canvas and the recreated panel change for dark.",
+  "screenshots": [
+    {
+      "id": "portfolio",
+      "src": "screenshots/portfolio.png",
+      "title": "Portfolio View",
+      "alt": "Portfolio View with spend, ROAS, conversions, CPA, clicks and CTR totals above a table of Meta and Google Ads accounts sorted by ROAS.",
+      "route": "/?view=portfolio&days=30",
+      "theme": "light",
+      "width": 1440,
+      "height": 960,
+      "viewport": {
+        "width": 1440,
+        "height": 960
+      }
+    }
+  ],
+  "cover": {
+    "light": "portfolio",
+    "dark": "portfolio",
+    "title": "OpenAdsReport",
+    "subtitle": "Meta and Google Ads, synced on a schedule and ranked by what to fix first.",
+    "headline": "Every account.\nOne report."
+  },
+  "features": [
+    {
+      "id": "spreadsheet-to-app",
+      "title": "Stop rebuilding\nthe report.",
+      "subtitle": "The numbers you paste into a sheet every week, synced into an app your team opens.",
+      "eyebrow": "01 / FROM SPREADSHEET",
+      "background": "#eff3ee",
+      "alt": "Conceptual Google Ads report spreadsheet with a broken ROAS formula, overlapped by the OpenAdsReport portfolio view showing the same accounts with synced totals.",
+      "sources": [
+        "src/client/app.tsx",
+        "src/server/sync.ts",
+        "src/server/sample.ts"
+      ],
+      "kind": "conceptual-ui"
+    },
+    {
+      "id": "portfolio",
+      "title": "Every account.\nOne table.",
+      "subtitle": "Meta and Google Ads side by side, worst ROAS first.",
+      "eyebrow": "02 / PORTFOLIO",
+      "background": "#f7f1ee",
+      "alt": "Conceptual floating portfolio table of Meta and Google Ads accounts sorted by ROAS, with an overlapping top-issue card for the weakest account.",
+      "sources": [
+        "src/client/app.tsx",
+        "src/server/metrics.ts"
+      ],
+      "kind": "conceptual-ui"
+    },
+    {
+      "id": "account-audit",
+      "title": "A score,\nthen the fix.",
+      "subtitle": "A /100 audit per account, with fixes ranked by the money at stake.",
+      "eyebrow": "03 / ACCOUNT AUDIT",
+      "background": "#f6f0e8",
+      "alt": "Conceptual account audit scorecard at 58/100 with six category scores, overlapped by a priority fixes panel and a Download PDF button being clicked.",
+      "sources": [
+        "src/server/audit.ts",
+        "src/server/report.ts"
+      ],
+      "kind": "conceptual-ui"
+    }
+  ],
+  "carousel": [
+    "spreadsheet-to-app",
+    "portfolio",
+    "account-audit"
+  ]
+}

@@ -1,4 +1,7 @@
-<img src="readme-banner.png" alt="OpenAdsReport preview" />
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="readme-banner-dark.png" />
+  <img src="readme-banner.png" alt="OpenAdsReport: Portfolio View of Meta and Google Ads accounts with a floating card for the top issue to fix" width="100%" />
+</picture>
 
 # OpenAdsReport
 
@@ -13,6 +16,18 @@ Reads come from a local warehouse, not from the ad platforms. A scheduled sync
 pulls each account's daily numbers into the app's own database, and every view,
 API response and agent question is answered from those rows. See
 [How data gets in](#how-data-gets-in).
+
+## See it in action
+
+Conceptual UI illustrations of the app's main capabilities, with fictional example data. Open an image to see the details.
+
+| From spreadsheet to app | Every account in one table |
+| --- | --- |
+| [![A weekly Google Ads report spreadsheet next to the same accounts in OpenAdsReport](previews/spreadsheet-to-app.png)](previews/spreadsheet-to-app.png) | [![Meta and Google Ads accounts in one table, worst ROAS first](previews/portfolio.png)](previews/portfolio.png) |
+| The numbers you paste into a sheet every week, synced into an app your team opens. | Meta and Google Ads side by side, worst ROAS first, with the top issue to fix. |
+| **A score, then the fix** | |
+| [![Account audit scored 58/100 with priority fixes](previews/account-audit.png)](previews/account-audit.png) | |
+| A /100 audit per account, with fixes ranked by the money at stake and a PDF to send. | |
 
 ## Views
 
