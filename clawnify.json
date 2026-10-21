@@ -1,7 +1,7 @@
 {
   "$schema": "https://app.clawnify.com/schema/v1/clawnify.json",
   "version": 1,
-  "name": "OpenAdsReport",
+  "name": "Ads report",
   "icon": "icon.svg",
   "description": "Cross-platform ads dashboard. Syncs spend, ROAS, conversions and CPA from Meta and Google Ads on a schedule, serves Account and Portfolio views from the synced data, surfaces the top issues hurting performance, and exposes everything as a clean JSON API for Clawnify agents.",
   "app": {
