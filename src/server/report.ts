@@ -107,7 +107,7 @@ interface Analysis {
 }
 
 const ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = "google/gemini-2.5-flash-lite";
+const MODEL = "google/gemini-3.1-flash-lite";
 
 const SYSTEM = (reportName: string) => `You are a senior paid-media analyst writing a ${reportName} report for a client.
 You DIAGNOSE and ADVISE — you never execute changes. Ground every claim in the numbers given.
