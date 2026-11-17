@@ -901,9 +901,6 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-white">
-      {/* Embedded only: the dashboard sidebar draws these; standalone keeps the view switcher. */}
-      {embedded && <AppNav title="Ads Report" icon="bar-chart-3" groups={NAV_GROUPS} active={view}
-        onNavigate={(item) => setView(item.id as View)} />}
       <div className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 py-5 sm:py-6 w-full">
         <TopBar
           view={view} setView={setView} accounts={accounts} accountId={accountId} setAccountId={setAccountId}
@@ -985,6 +982,12 @@ export function App() {
         )}
 
         {!portfolio && !account && view !== "reports" && !error && <div className="py-24 text-center text-[13px] text-[#94A3B8]">Loading…</div>}
+
+        {/* Inside Clawnify the dashboard sidebar draws these views; anywhere else
+            the view switcher above stays, and the notice card sits here. */}
+        <AppNav title="Ads Report" icon="bar-chart-3" groups={NAV_GROUPS} active={view}
+          onNavigate={(item) => setView(item.id as View)}
+          standalone={(nav) => nav.card && <div className="mt-8 max-w-xs no-print">{nav.card}</div>} />
 
         <footer className="mt-8 sm:mt-12 pt-4 sm:pt-6 border-t border-[#E2E8F0] no-print">
           <div className="flex items-center justify-end gap-6 text-[13px] text-[#475569]">
