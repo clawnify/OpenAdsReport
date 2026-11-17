@@ -9,7 +9,7 @@
     "deploy": "clawnify deploy"
   },
   "dependencies": {
-    "@clawnify/app": "^0.4.8",
+    "@clawnify/app": "^0.4.9",
     "@clawnify/connections": "^0.2.2",
     "@clawnify/db": "^0.4.3",
     "@clawnify/queue": "^0.1.1",
